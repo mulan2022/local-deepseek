@@ -71,6 +71,18 @@ export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock
  */
 export type ReplyStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 
+export type RccSnapshot = {
+  capturedAt: number
+  recent: { id: string; date: string; title: string; quotes: string[] }[]
+}
+
+export type ChatMemoryFrame = {
+  payload: string
+  hasRcc?: true
+  vaultSnapshot?: string
+  relatedQuote?: string
+}
+
 export type AssistantMessage = MessageBranch & {
   id: string
   role: 'assistant'
@@ -83,6 +95,8 @@ export type AssistantMessage = MessageBranch & {
   search?: boolean
   /** 本轮请求的系统信息快照；各回答版本独立保存，续写沿用。历史消息中缺省的快照保持为空。 */
   latestReminder?: string
+  /** 本次实际发送的记忆附文，后续轮次按回答版本原样回放。 */
+  memoryFrame?: ChatMemoryFrame
   /** 是否允许作为续写前缀；仍需满足回复状态与内容限制。 */
   prefix: boolean
   status: ReplyStatus
@@ -114,6 +128,8 @@ export type Session = {
   messages: Message[]
   /** undefined 表示线性消息列表；null 表示空会话。 */
   rootMessageId?: string | null
+  /** 新会话首轮固定的 RCC；历史数据和关闭记忆时创建的会话可以没有快照。 */
+  rccSnapshot?: RccSnapshot | null
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */

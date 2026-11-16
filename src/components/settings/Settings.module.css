@@ -84,6 +84,69 @@
   }
 }
 
+.memorySettings {
+  display: grid;
+  gap: 8px;
+  padding: 12px 0;
+  font-size: 14px;
+  line-height: 22px;
+  border-block: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+
+  p {
+    margin: 0;
+    font-size: 13px;
+  }
+
+  textarea {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    margin-top: 4px;
+    padding: 8px;
+    border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    resize: vertical;
+  }
+}
+
+.memoryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memorySearch {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.memoryDreamList {
+  display: grid;
+  max-height: 230px;
+  overflow-y: auto;
+  gap: 5px;
+
+  label {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    padding: 5px 2px;
+    overflow-wrap: anywhere;
+  }
+}
+
 .row {
   display: flex;
   align-items: center;

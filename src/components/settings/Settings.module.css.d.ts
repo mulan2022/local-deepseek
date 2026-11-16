@@ -1,4 +1,8 @@
 declare const styles: {
+  readonly "memoryActions": string;
+  readonly "memoryDreamList": string;
+  readonly "memorySearch": string;
+  readonly "memorySettings": string;
   readonly "dialog": string;
   readonly "dialogMain": string;
   readonly "navigation": string;

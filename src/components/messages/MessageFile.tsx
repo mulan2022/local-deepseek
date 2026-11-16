@@ -4,7 +4,9 @@ import { useTranslate } from '../../i18n/index.js'
 import { useUploads } from '../../services/attachments.js'
 import { loadFile } from '../../services/chat/db.js'
 import type { FileAttachment } from '../../services/chat/types.js'
+import { isAndroidApp, saveLocalFile } from '../../services/download.js'
 import { IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
+import { showToast } from '../base/toastState.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { FileCard } from '../files/FileCard.js'
 import styles from './MessageFile.module.css'
@@ -65,6 +67,15 @@ export const MessageFile = ({
   const errorText = failed ? t(upload.error.key, upload.error.params) : undefined
 
   const retry = retryable ? onRetry : null
+  const openFile = () => {
+    if (isAndroidApp()) {
+      void loadFile(file.id)
+        .then((blob) => blob && saveLocalFile(file.name, blob))
+        .catch((error: unknown) => showToast(error instanceof Error ? error.message : String(error)))
+    } else if (url) {
+      window.open(url, '_blank', 'noreferrer')
+    }
+  }
 
   if (file.isImage && url !== null) {
     const preview = url ? (
@@ -142,6 +153,12 @@ export const MessageFile = ({
         target="_blank"
         rel="noreferrer"
         title={file.name}
+        onClick={(event) => {
+          if (isAndroidApp()) {
+            event.preventDefault()
+            openFile()
+          }
+        }}
       >
         {preview}
       </a>
@@ -158,7 +175,7 @@ export const MessageFile = ({
       status={uploading ? 'uploading' : failed ? 'error' : 'done'}
       error={errorText}
       onRetry={retry ?? undefined}
-      onOpen={url && !upload ? () => window.open(url, '_blank', 'noreferrer') : undefined}
+      onOpen={url && !upload ? openFile : undefined}
     />
   )
 }

@@ -17,6 +17,7 @@ import {
 } from '../../services/chat/backup.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
+import { saveLocalFile } from '../../services/download.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
 import {
   isChineseBrowser,
@@ -33,6 +34,7 @@ import { Modal } from '../base/Modal.js'
 import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
+import { ChatMemorySettings } from './ChatMemorySettings.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
@@ -52,6 +54,7 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     icon: <IconSettingsOutline16 />,
   },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
+  { value: 'memory', label: 'chatMemory', icon: <IconDataOutline16 /> },
 ]
 
 const SettingsContent = () => {
@@ -101,6 +104,8 @@ const SettingsContent = () => {
               <TtsVoiceSetting />
               <LocationSetting />
             </>
+          ) : section === 'memory' ? (
+            <ChatMemorySettings />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />
@@ -436,7 +441,7 @@ const SettingCell = ({
   )
 }
 
-/** 选文件后先提示覆盖；确认后才检查文件并执行导入，任何错误都提示导入失败。 */
+/** 选文件后先提示覆盖；确认后才检查文件并执行导入。 */
 const useHistoryImport = () => {
   const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -450,12 +455,21 @@ const useHistoryImport = () => {
     importing.current = true
     setFile(null)
     setBusy(true)
-    setStatus(null)
+    setStatus({ key: 'historyImportChecking' })
     try {
-      const count = await importHistory(file)
+      const count = await importHistory(file, (entries) => {
+        setStatus(entries === 'saving'
+          ? { key: 'historyImportSaving' }
+          : { key: 'historyImportProgress', params: { count: entries } })
+      })
       setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
-    } catch {
-      setStatus({ key: 'historyImportFailed', error: true })
+    } catch (error) {
+      const key = error instanceof BackupError
+        ? error.key
+        : error instanceof Error && error.name === 'QuotaExceededError'
+          ? 'historyImportStorageFull'
+          : 'historyImportFailed'
+      setStatus({ key, error: true })
     } finally {
       importing.current = false
       setBusy(false)
@@ -524,12 +538,7 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
     setStatus(null)
     try {
       const { name, blob } = await exportHistory()
-      const url = URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = name
-      link.click()
-      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      await saveLocalFile(name, blob)
     } catch (error) {
       setStatus(errorStatus('historyExportFailed', error))
     } finally {

@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import { buildChatMemoryFrame, captureRcc, readMemory } from './memory.js'
+import { runMemoryTools } from './memoryToolLoop.js'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { ChatModel, CreateMessageRequest } from '../api/types.js'
@@ -611,7 +613,7 @@ export const sendMessage = (targetSessionId: string | null) => {
   }
   persist(sessionId)
   clearSentDraft(targetSessionId)
-  void streamReply(sessionId, reply, { history, question })
+  void streamReply(sessionId, reply, { history, question, seedRcc: targetSessionId === null })
   return true
 }
 
@@ -749,7 +751,12 @@ export const retryUpload = (sessionId: string, messageId: string) => {
   void streamReply(sessionId, reply, { history: path.slice(0, index - 1), question })
 }
 
-type Request = { history: Message[]; question: UserMessage; prefix?: AssistantMessage }
+type Request = {
+  history: Message[]
+  question: UserMessage
+  prefix?: AssistantMessage
+  seedRcc?: boolean
+}
 
 /** 把补传得到的 serverId 写回会话里所有引用同一附件的消息（编辑、重新生成会共用附件） */
 const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
@@ -844,7 +851,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   const pending = new Map<string, FileAttachment>()
-  for (const [user] of getContextRounds(request.history).toReversed()) {
+  for (const [user] of getContextRounds(request.history).reverse()) {
     for (const file of user.files) {
       if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
         pending.set(file.id, file)
@@ -966,6 +973,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
   let reply = initial
+  let memoryPrepared = false
   let frame = 0
   const flush = () => {
     cancelAnimationFrame(frame)
@@ -980,12 +988,36 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let preparing = true
       let receivedContent = false
       try {
+        if (request.seedRcc && getSession(sessionId)?.rccSnapshot === undefined) {
+          const rccSnapshot = await captureRcc(sessionId)
+          controller.signal.throwIfAborted()
+          updateSession(sessionId, (session) => ({ ...session, rccSnapshot }))
+          persist(sessionId)
+        }
         const prepared = await prepareFiles(sessionId, request, controller.signal)
         preparing = false
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = prepared.prefix
           ? prepared.prefix.latestReminder
           : createLatestReminder(useSettings.getState())
+        const apiKey = useSettings.getState().apiKey ?? ''
+        if (!memoryPrepared) {
+          let memoryFrame = prepared.prefix?.memoryFrame
+          if (!prepared.prefix && readMemory().enabled) {
+            const previousFrames = getContextRounds(prepared.history)
+              .flatMap(([, answer]) => answer.memoryFrame ? [answer.memoryFrame] : [])
+            const results = await runMemoryTools(
+              apiKey, sessionId, prepared.question, prepared.history, controller.signal
+            )
+            memoryFrame = await buildChatMemoryFrame(
+              sessionId, getSession(sessionId)?.rccSnapshot, previousFrames,
+              prepared.question.content, results
+            )
+          }
+          reply = { ...reply, memoryFrame }
+          memoryPrepared = true
+        }
+        controller.signal.throwIfAborted()
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
@@ -994,10 +1026,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
-          latestReminder
+          latestReminder,
+          reply.memoryFrame?.payload,
+          readMemory().enabled
         )
         const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
+          apiKey,
           {
             model: initial.model ?? MODEL,
             system: SYSTEM_PROMPT,
