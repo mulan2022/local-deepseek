@@ -1,6 +1,7 @@
 import type { ServerToolUseBlock } from '../../api/types.js'
 import { getVisibleMessages, normalizeSession } from '../branches.js'
 import { describeReply } from '../describe.js'
+import { totalTokens } from '../tokenUsage.js'
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
 import { fail } from './errors.js'
 import type {
@@ -199,12 +200,7 @@ const replyStatus = ({ status, stopReason }: AssistantMessage): ChatMessageStatu
 
 /** 最近一次请求的输入（含缓存）与输出之和，即这一条结束时的上下文 token。 */
 const contextTokens = ({ usage }: AssistantMessage) =>
-  usage
-    ? usage.input_tokens +
-      usage.cache_creation_input_tokens +
-      usage.cache_read_input_tokens +
-      usage.output_tokens
-    : 0
+  usage ? totalTokens(usage) : 0
 
 /** 消息按父节点优先重新编号为 1…n，保证 parent_id 小于 id。 */
 const numberMessages = (messages: Message[]) => {
@@ -250,7 +246,22 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
       thinking_enabled: reply?.thinking ?? false,
       search_enabled: reply?.search ?? false,
       accumulated_token_usage: message.role === 'user' ? 0 : contextTokens(message),
+      ...(message.role === 'assistant' && message.usage ? {
+        local_token_usage: { latest: message.usage, total: message.totalUsage ?? message.usage },
+      } : {}),
+      ...(message.role === 'assistant' && message.compact ? {
+        local_compact: { summary: message.compact.summary, created_at: iso(message.compact.createdAt) },
+      } : {}),
       inserted_at: iso(message.createdAt),
+      ...(message.role === 'user' && message.heartbeat ? {
+        local_heartbeat: {
+          local_time: message.heartbeat.localTime, note: message.heartbeat.task,
+          ...(message.heartbeat.schedule ? { schedule: {
+            local_time: message.heartbeat.schedule.localTime, count: message.heartbeat.schedule.count,
+            mode: message.heartbeat.schedule.mode, value: message.heartbeat.schedule.value,
+          } } : {}),
+        },
+      } : {}),
       fragments:
         message.role === 'user' ? userFragments(message, exportImage) : assistantFragments(message),
     }

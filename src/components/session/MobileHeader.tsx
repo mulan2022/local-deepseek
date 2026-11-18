@@ -20,6 +20,11 @@ export const MobileHeader = ({ title }: { title?: string }) => {
       {title === undefined ? null : (
         <>
           <div className={styles.title}>{title}</div>
+          {window.AndroidFloatingChat ? (
+            <button type="button" className={styles.floating} onClick={() => window.AndroidFloatingChat?.open()}>
+              {t('floatingChatOpen')}
+            </button>
+          ) : null}
           <IconButton
             size="xl"
             tone="primary"

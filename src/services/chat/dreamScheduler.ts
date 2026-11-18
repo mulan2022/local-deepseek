@@ -14,6 +14,9 @@ export const runDreamForCurrentHistory = (apiKey: string, allow = () => true, op
 export const bindDreamScheduler = () => {
   let lastActivity = 0
   const check = () => {
+    if (window.AndroidHeartbeat?.isHeadless()) {
+      return
+    }
     const state = useChatStore.getState()
     const memory = readMemory()
     const { apiKey } = useSettings.getState()

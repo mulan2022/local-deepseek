@@ -8,6 +8,7 @@ import {
   IconThinkOutline14,
 } from '../base/icons.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { usesDeepSeekWebTools } from '../../services/api/providers.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
@@ -23,7 +24,7 @@ import {
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { IconButton } from '../base/IconButton.js'
 import { Tooltip } from '../base/Tooltip.js'
-import { ensureApiKey } from '../settings/settingsDialogState.js'
+import { ensureApiKey, openSettings } from '../settings/settingsDialogState.js'
 import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
 import { ACCEPT, useUploads } from '../../services/attachments.js'
@@ -35,21 +36,23 @@ import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
-export const ChatInput = memo(function ChatInput({ sessionId }: { sessionId: string | null }) {
+export const ChatInput = memo(function ChatInput({ sessionId, compact = false }: { sessionId: string | null; compact?: boolean }) {
   // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务保留。
-  return <Input key={sessionId === null ? 'new' : `session:${sessionId}`} sessionId={sessionId} />
+  return <Input key={sessionId === null ? 'new' : `session:${sessionId}`} sessionId={sessionId} compact={compact} />
 })
 
-const Input = ({ sessionId }: { sessionId: string | null }) => {
+const Input = ({ sessionId, compact }: { sessionId: string | null; compact: boolean }) => {
   const t = useTranslate()
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
   const { text, attachments } = draft
   const setText = (value: string) => setDraftText(sessionId, value)
   const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
   const streaming = useChatStore(
-    (state) => sessionId !== null && Object.hasOwn(state.streaming, sessionId)
+    (state) => sessionId !== null && (Object.hasOwn(state.streaming, sessionId) || Object.hasOwn(state.compacting, sessionId))
   )
   const thinking = useSettings((state) => state.thinking)
+  const model = useSettings((state) => state.selectedModel)
+  const deepseekTools = usesDeepSeekWebTools(model)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
@@ -72,10 +75,17 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     const observer = new ResizeObserver(updateLabels)
     observer.observe(toggles)
     return () => observer.disconnect()
-  }, [t])
+  }, [t, model, compact])
 
   const acceptFiles = (files: File[]) => {
-    if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
+    if (files.length === 0 || useChatStore.getState().importingHistory) {
+      return
+    }
+    if (!usesDeepSeekWebTools(useSettings.getState().selectedModel)) {
+      showToast({ key: 'modelAttachmentsUnavailable', type: 'error' })
+      return
+    }
+    if (!ensureApiKey()) {
       return
     }
     const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
@@ -85,7 +95,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }
   const retryFile = useCallback(
     (id: string) => {
-      if (!useChatStore.getState().importingHistory && ensureApiKey()) {
+      if (!useChatStore.getState().importingHistory &&
+          usesDeepSeekWebTools(useSettings.getState().selectedModel) && ensureApiKey()) {
         retryDraftAttachment(sessionId, id, useSettings.getState().apiKey ?? '')
       }
     },
@@ -133,6 +144,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
 
   const send = () => {
+    if (!usesDeepSeekWebTools(useSettings.getState().selectedModel) && getDraft(sessionId).attachments.length) {
+      showToast({ key: 'modelAttachmentsUnavailable', type: 'error' })
+      return
+    }
     if (
       useChatStore.getState().importingHistory ||
       voice.status !== 'idle' ||
@@ -145,8 +160,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       return
     }
     stopReadAloud()
-    if (isMobile) {
+    if (isMobile || compact) {
       textareaRef.current?.blur()
+      if (compact) {window.AndroidFloatingChat?.focusInput(false)}
     } else {
       textareaRef.current?.focus()
     }
@@ -154,7 +170,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
 
   return (
     <div
-      className={clsx(styles.wrapper, sessionId === null ? styles.home : styles.session)}
+      className={clsx(styles.wrapper, sessionId === null ? styles.home : styles.session, compact && styles.compact)}
       onClick={(event) => {
         if (event.target === event.currentTarget) {
           textareaRef.current?.focus({ preventScroll: true })
@@ -169,10 +185,13 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           placeholder={t('chatInputPlaceholderChat')}
           rows={2}
           // 移动端不自动聚焦，避免一打开就弹出键盘
-          autoFocus={!isMobile}
+          autoFocus={!isMobile && !compact}
           disabled={importingHistory}
           value={text}
           onChange={(event) => setText(event.target.value)}
+          onFocus={() => { if (compact) {window.AndroidFloatingChat?.focusInput(true)} }}
+          onBlur={() => { if (compact) {window.AndroidFloatingChat?.focusInput(false)} }}
+          onClick={() => { if (compact) {window.AndroidFloatingChat?.focusInput(true)} }}
           onMouseDown={(event) => {
             // 首次点击时手动聚焦，避免 Safari 把整个页面滚到输入框位置。
             if (isMobile && event.button === 0 && document.activeElement !== event.currentTarget) {
@@ -201,8 +220,17 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       </div>
       <div className={styles.functionRow}>
         {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
-        <div ref={togglesRef} className={styles.toggles}>
-          <Tooltip content={t('deactivatedThinkTooltip')}>
+        {compact ? null : <div ref={togglesRef} className={styles.toggles}>
+          <button
+            type="button"
+            className={clsx(styles.toggle, styles.model)}
+            aria-label={t('modelSwitch')}
+            title={model.model}
+            onClick={() => openSettings('models')}
+          >
+            {model.model}
+          </button>
+          {model.provider === 'deepseek' ? <Tooltip content={t('deactivatedThinkTooltip')}>
             <button
               type="button"
               className={clsx(styles.toggle, thinking && styles.selected)}
@@ -213,8 +241,8 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <IconThinkOutline14 />
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
-          </Tooltip>
-          <Tooltip content={t('deactivatedSearchTooltip')}>
+          </Tooltip> : null}
+          {deepseekTools ? <Tooltip content={t('deactivatedSearchTooltip')}>
             <button
               type="button"
               className={clsx(styles.toggle, search && styles.selected)}
@@ -225,10 +253,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <IconGlobeLanguageOutline14 />
               <span className={styles.toggleLabel}>{t('search')}</span>
             </button>
-          </Tooltip>
-        </div>
+          </Tooltip> : null}
+        </div>}
         <div className={styles.right}>
-          <VoiceButton
+          {!compact && (deepseekTools || voice.status !== 'idle') ? <VoiceButton
             status={voice.status}
             disabled={!voice.available}
             seconds={voice.seconds}
@@ -240,15 +268,15 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 void voice.toggle()
               }
             }}
-          />
-          <IconButton
+          /> : null}
+          {deepseekTools && !compact ? <IconButton
             size="m"
             tone="primary"
             icon={<IconPaperclipOutline16 />}
             tooltip={t('uploadFile')}
             disabled={importingHistory}
             onClick={() => ensureApiKey() && fileInputRef.current?.click()}
-          />
+          /> : null}
           <input
             ref={fileInputRef}
             type="file"

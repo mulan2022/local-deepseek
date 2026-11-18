@@ -1,6 +1,13 @@
 :root {
+  --app-viewport-base-height: 100vh;
   --message-list-max-width: 840px;
   --message-list-padding-horizontal: 44px;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-base-height: 100dvh;
+  }
 }
 
 @media (max-width: 1023px) {

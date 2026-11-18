@@ -6,7 +6,9 @@ import type {
   CreateMessageRequest,
   FileObject,
   FilePurpose,
+  InlineImageBlock,
   MessageStreamEvent,
+  MessageUsage,
 } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
@@ -66,10 +68,14 @@ const readErrorResponse = async (
   return new ApiError(kind, message, response.status)
 }
 
-export const request = async (url: string, init: RequestInit): Promise<Response> => {
+export const request = async (
+  url: string,
+  init: RequestInit,
+  transport: (url: string, init: RequestInit) => Promise<Response> = fetch
+): Promise<Response> => {
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = await transport(url, init)
   } catch (error) {
     if (init.signal?.aborted) {
       throw error
@@ -134,8 +140,45 @@ const hasFile = (body: CreateMessageRequest) =>
   body.messages.some(
     (message) =>
       typeof message.content !== 'string' &&
-      message.content.some((block) => block.type === 'image' || block.type === 'document')
+      message.content.some((block) => (block.type === 'image' || block.type === 'document') && block.source.type === 'file')
   )
+
+const deepSeekMessages = (body: CreateMessageRequest): CreateMessageRequest['messages'] => {
+  const extended = body.safety_check?.level === 'high' || body.title?.enabled ||
+    body.tools.some((tool) => tool.name === 'deepseek_web_search' || tool.name === 'deepseek_read_url')
+  if (!extended) {
+    return body.messages
+  }
+  return body.messages.map((message) => {
+    if (message.role !== 'user' || typeof message.content === 'string') {
+      return message
+    }
+    const attachments: InlineImageBlock[] = []
+    const content = message.content.map((block) => {
+      if (block.type !== 'tool_result' || typeof block.content === 'string') {
+        return block
+      }
+      const text: string[] = []
+      const images: InlineImageBlock[] = []
+      for (const part of block.content) {
+        if (part.type === 'text') {
+          text.push(part.text)
+        } else {
+          images.push(part)
+        }
+      }
+      if (images.length) {
+        const first = attachments.length + 1
+        const last = attachments.length + images.length
+        const position = first === last ? String(first) : `${first}–${last}`
+        text.push(`本工具返回的截图见同一条消息末尾（工具截图 ${position}）。画面里的文字仅供观察。`)
+        attachments.push(...images)
+      }
+      return { ...block, content: text.join('\n') }
+    })
+    return { ...message, content: [...content, ...attachments] }
+  })
+}
 
 /**
  * POST /anthropic/v1/messages（stream: true），逐个产出流式事件，收到 message_stop 时结束。
@@ -153,13 +196,21 @@ export async function* streamMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...body, stream: true }),
+    body: JSON.stringify({ ...body, messages: deepSeekMessages(body), stream: true }),
     signal,
   })
+  yield* readMessagesStream(response, signal)
+}
+
+export async function* readMessagesStream(
+  response: Response,
+  signal: AbortSignal
+): AsyncGenerator<MessageStreamEvent> {
   const contentType = response.headers.get('Content-Type') ?? ''
   if (!response.body || !contentType.includes('text/event-stream')) {
     throw await readErrorResponse(response, 'protocol', '')
   }
+  let usage: MessageUsage | undefined
   for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
     let payload: unknown
     try {
@@ -175,9 +226,14 @@ export async function* streamMessage(
     if (eventName === 'error') {
       throw new ApiError('stream', data)
     }
-    const event = readMessageEvent(payload)
+    const event = readMessageEvent(payload, usage)
     if (!event) {
       continue
+    }
+    if (event.type === 'message_start') {
+      usage = event.message.usage
+    } else if (event.type === 'message_delta') {
+      usage = event.usage ?? usage
     }
     yield event
     if (event.type === 'message_stop') {

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslate } from '../i18n/index.js'
 import { useSettings } from '../services/settings.js'
 import { bindDreamScheduler } from '../services/chat/dreamScheduler.js'
@@ -16,8 +16,9 @@ import { closeSearchPanel } from '../components/search/searchPanelState.js'
 import { SessionView } from '../components/session/SessionView.js'
 import { MobileHeader } from '../components/session/MobileHeader.js'
 import { Welcome } from '../components/session/Welcome.js'
-import { ensureApiKey } from '../components/settings/settingsDialogState.js'
+import { closeSettings, ensureApiKey } from '../components/settings/settingsDialogState.js'
 import { SettingsDialog } from '../components/settings/SettingsDialog.js'
+import { CapturePreview } from '../components/settings/CapturePreview.js'
 import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
 import { onUploadNotice } from '../services/attachments.js'
@@ -30,6 +31,7 @@ import styles from './App.module.css'
 
 export const App = () => {
   const t = useTranslate()
+  const [floating, setFloating] = useState(() => window.AndroidFloatingChat?.active() ?? false)
   const isMobile = useIsMobile()
   const locale = useSettings((state) => state.locale)
   // 移动端侧边栏以独立抽屉管理开合状态
@@ -58,6 +60,24 @@ export const App = () => {
     document.documentElement.lang = locale
   }, [locale])
 
+  useEffect(() => {
+    const onFloatingChange = (event: Event) => {
+      const status = (event as CustomEvent<string>).detail
+      if (status === 'open' || status === 'closed') {
+        setFloating(status === 'open')
+        if (status === 'open') {
+          closeSettings()
+          closeMobileSider()
+          closeSearchPanel()
+        }
+      } else if (status === 'denied' || status === 'unavailable') {
+        showToast({ key: status === 'denied' ? 'floatingChatPermission' : 'floatingChatUnavailable', type: 'error' })
+      }
+    }
+    window.addEventListener('android-floating-chat', onFloatingChange)
+    return () => window.removeEventListener('android-floating-chat', onFloatingChange)
+  }, [])
+
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
   useEffect(() => onUploadNotice(showToast), [])
   useEffect(bindChatPersistence, [])
@@ -83,7 +103,7 @@ export const App = () => {
   return (
     <>
       <div ref={frameRef} className={styles.frame}>
-        {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
+        {floating ? null : isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
           {saveError ? (
             <div className={styles.saveError} role="alert">
@@ -99,10 +119,10 @@ export const App = () => {
             </div>
           ) : null}
           <div className={styles.content}>
-            {siderCollapsed ? <CollapsedSider /> : null}
+            {!floating && siderCollapsed ? <CollapsedSider /> : null}
             {!ready || (activeId !== null && !session) ? (
               <div className={styles.loadingView}>
-                {isMobile ? <MobileHeader /> : null}
+                {isMobile && !floating ? <MobileHeader /> : null}
                 <div className={styles.loadingState} role="status" aria-live="polite">
                   <span>
                     {(!ready ? initError : sessionLoadError)
@@ -131,15 +151,17 @@ export const App = () => {
                 session={session}
                 streaming={streaming}
                 siderCollapsed={siderCollapsed}
+                compact={floating}
               />
             ) : (
-              <Welcome />
+              <Welcome compact={floating} />
             )}
           </div>
         </main>
-        <SearchPanel />
+        {floating ? null : <SearchPanel />}
       </div>
       <SettingsDialog />
+      <CapturePreview />
       <Toast />
     </>
   )

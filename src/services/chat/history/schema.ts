@@ -34,6 +34,16 @@ const number: Read<number> = (value) =>
 const count: Read<number> = (value) =>
   Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : invalid()
 
+const tokenUsage = (value: unknown) => {
+  const usage = record(value)
+  return {
+    input_tokens: count(usage.input_tokens),
+    cache_creation_input_tokens: count(usage.cache_creation_input_tokens),
+    cache_read_input_tokens: count(usage.cache_read_input_tokens),
+    output_tokens: count(usage.output_tokens),
+  }
+}
+
 const time: Read<string> = (value) => {
   if (typeof value !== 'string') {
     return invalid()
@@ -199,6 +209,10 @@ const fragment: Read<Fragment | null> = (value) => {
 
 const message: Read<ChatMessage> = (value) => {
   const item = record(value)
+  const wake = item.role === 'USER' && item.local_heartbeat !== undefined ? record(item.local_heartbeat) : null
+  const schedule = wake?.schedule === undefined ? null : record(wake.schedule)
+  const usage = item.role === 'ASSISTANT' && item.local_token_usage !== undefined ? record(item.local_token_usage) : null
+  const compact = item.role === 'ASSISTANT' && item.local_compact !== undefined ? record(item.local_compact) : null
   return {
     id: count(item.id),
     parent_id: nullable(count)(item.parent_id),
@@ -215,7 +229,16 @@ const message: Read<ChatMessage> = (value) => {
     thinking_enabled: boolean(item.thinking_enabled),
     search_enabled: boolean(item.search_enabled),
     accumulated_token_usage: count(item.accumulated_token_usage),
+    ...(usage ? { local_token_usage: { latest: tokenUsage(usage.latest), total: tokenUsage(usage.total) } } : {}),
+    ...(compact ? { local_compact: { summary: string(compact.summary), created_at: time(compact.created_at) } } : {}),
     inserted_at: time(item.inserted_at),
+    ...(wake ? { local_heartbeat: {
+      local_time: string(wake.local_time), note: string(wake.note),
+      ...(schedule ? { schedule: {
+        local_time: string(schedule.local_time), count: count(schedule.count),
+        mode: string(schedule.mode), value: string(schedule.value),
+      } } : {}),
+    } } : {}),
     fragments: list(fragment)(item.fragments).filter((item): item is Fragment => item !== null),
   }
 }

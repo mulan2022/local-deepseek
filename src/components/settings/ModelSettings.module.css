@@ -1,0 +1,42 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(100%, 540px);
+  color: var(--dsw-alias-label-primary);
+
+  label {
+    display: grid;
+    gap: 6px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  input,
+  select {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    min-height: 40px;
+    padding: 7px 10px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 9px;
+    background: var(--dsw-alias-bg-layer-3);
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

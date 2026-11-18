@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="floating_chat_title">Chat</string>
+    <string name="floating_chat_expand">Open full chat</string>
+    <string name="floating_chat_close">Close floating chat</string>
+    <string name="floating_chat_capture_preview">Preview screen capture</string>
+</resources>

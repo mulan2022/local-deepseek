@@ -39,16 +39,18 @@ try {
 
     $aapt2 = Join-Path $BuildTools 'aapt2.exe'
     $resources = Join-Path $staging 'resources.zip'
+    $generated = Join-Path $staging 'generated'
     $unsigned = Join-Path $staging 'unsigned.apk'
     $aligned = Join-Path $staging 'aligned.apk'
     $output = Join-Path $staging 'DeepSeek-Local-Chat.apk'
     Invoke-BuildTool $aapt2 @('compile', '--dir', "$staging\res", '-o', $resources)
     Invoke-BuildTool $aapt2 @('link', '-I', $platform, '--manifest', "$staging\AndroidManifest.xml",
-        '-o', $unsigned, $resources)
+        '--java', $generated, '-o', $unsigned, $resources)
 
-    $source = Join-Path $android 'src\local\deepseek\chat\MainActivity.java'
-    Invoke-BuildTool "$Jdk\bin\javac.exe" @('--release', '8', '-encoding', 'UTF-8',
-        '-classpath', $platform, '-d', $classes, $source)
+    $sources = @(Get-ChildItem -LiteralPath (Join-Path $android 'src'), $generated -Recurse -File -Filter '*.java' |
+        ForEach-Object FullName)
+    Invoke-BuildTool "$Jdk\bin\javac.exe" (@('--release', '8', '-encoding', 'UTF-8',
+        '-classpath', $platform, '-d', $classes) + $sources)
     $classFiles = @(Get-ChildItem -LiteralPath $classes -Recurse -File -Filter '*.class' |
         ForEach-Object FullName)
     Invoke-BuildTool "$Jdk\bin\java.exe" (@('-cp', "$BuildTools\lib\d8.jar",

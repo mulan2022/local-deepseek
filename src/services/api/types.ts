@@ -4,7 +4,7 @@
  * 声明 deepseek_web_search / deepseek_read_url 或设置 safety_check.level 为 high 时进入扩展模式。
  */
 
-export type ChatModel = 'deepseek-flash' | 'deepseek-v4-pro'
+export type ChatModel = string
 
 // ---------- 响应：内容块 ----------
 
@@ -120,10 +120,14 @@ export type ServerToolBlock =
 
 /** 用于识别客户端工具调用的内容块类型 */
 export type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
+export type InlineImageBlock = {
+  type: 'image'
+  source: { type: 'base64'; media_type: 'image/jpeg'; data: string }
+}
 export type ToolResultBlock = {
   type: 'tool_result'
   tool_use_id: string
-  content: string
+  content: string | (TextBlockParam | InlineImageBlock)[]
   is_error?: boolean
 }
 
@@ -164,7 +168,7 @@ export type AssistantBlockParam =
 export type MessageParam =
   /** Chat Engine 扩展角色，位于对应 user 前；需服务端支持 latest_reminder。 */
   | { role: 'latest_reminder'; content: string }
-  | { role: 'user'; content: string | (FileBlockParam | TextBlockParam | ToolResultBlock)[] }
+  | { role: 'user'; content: string | (FileBlockParam | TextBlockParam | ToolResultBlock | InlineImageBlock)[] }
   | { role: 'assistant'; content: AssistantBlockParam[] }
 
 /** 开启联网搜索与边想边搜 */
@@ -197,6 +201,7 @@ export type CreateMessageRequest = {
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
   tools: (DeepseekWebSearchTool | DeepseekReadUrlTool | ClientTool)[]
+  tool_choice?: { type: 'none' }
   safety_check?: { level: 'high' }
   title?: { enabled: boolean }
 }

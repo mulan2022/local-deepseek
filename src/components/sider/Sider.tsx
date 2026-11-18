@@ -1,10 +1,13 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
-import { IconDataOutline16, IconPanelLeftOutline16, IconSettingsOutline16, NewChatIcon } from '../base/icons.js'
+import {
+  IconDataOutline16, IconPanelLeftOutline16, IconSearchOutline16, IconSettingsOutline16, NewChatIcon,
+} from '../base/icons.js'
 import { setSiderCollapsed } from '../../services/settings.js'
+import { searchConversations, type ConversationMatch } from '../../services/chat/searchConversations.js'
 import { groupSessions } from '../../services/chat/sessionGroups.js'
-import { newChat, removeSession, useChatStore } from '../../services/chat/store.js'
+import { newChat, removeSession, selectSession, useChatStore } from '../../services/chat/store.js'
 import type { SessionSummary } from '../../services/chat/types.js'
 import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
@@ -20,10 +23,37 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const t = useTranslate()
   const sessions = useChatStore((state) => state.sessions)
   const activeId = useChatStore((state) => state.activeId)
+  const replacingHistory = useChatStore((state) => state.importingHistory)
   const [now, setNow] = useState(Date.now)
   const groups = useMemo(() => groupSessions(sessions, now, t), [sessions, now, t])
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
   const [deletePending, setDeletePending] = useState(false)
+  const [search, setSearch] = useState('')
+  const query = search.trim()
+  const [matches, setMatches] = useState<ConversationMatch[] | 'error' | null>(null)
+
+  useEffect(() => {
+    if (!query || replacingHistory) {
+      return
+    }
+    const controller = new AbortController()
+    setMatches(null)
+    const timer = window.setTimeout(() => {
+      void searchConversations(sessions, query, controller.signal).then((results) => {
+        if (!controller.signal.aborted) {
+          setMatches(results)
+        }
+      }).catch(() => {
+        if (!controller.signal.aborted) {
+          setMatches('error')
+        }
+      })
+    }, 220)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [query, replacingHistory, sessions])
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>
@@ -74,9 +104,51 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         </span>
         {t('newChat')}
       </button>
+      <div className={styles.chatSearch}>
+        <span aria-hidden="true"><IconSearchOutline16 /></span>
+        <input
+          type="search"
+          aria-label={t('localChatSearch')}
+          placeholder={t('localChatSearch')}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+              setSearch('')
+            }
+          }}
+        />
+      </div>
       <div className={styles.listWrap}>
         <div className={styles.list}>
-          {groups.map((group) => (
+          {query ? (
+            replacingHistory || matches === null || matches === 'error' || !matches.length ? (
+              <div className={styles.searchStatus} role="status">
+                {t(replacingHistory || matches === null
+                  ? 'localChatSearching'
+                  : matches === 'error'
+                    ? 'localChatSearchError'
+                    : 'localChatSearchEmpty')}
+              </div>
+            ) : matches.map(({ session, snippet }) => (
+              <button
+                type="button"
+                key={session.id}
+                className={styles.searchMatch}
+                onClick={() => {
+                  selectSession(session.id, snippet?.messageId)
+                  closeMobileSider()
+                }}
+              >
+                <span className={styles.searchTitle}>{session.title || t('untitledChat')}</span>
+                {snippet ? (
+                  <span className={styles.searchSnippet}>
+                    {snippet.before}<mark>{snippet.hit}</mark>{snippet.after}
+                  </span>
+                ) : null}
+              </button>
+            ))
+          ) : groups.map((group) => (
             <div key={group.key} className={styles.section}>
               <div className={styles.sectionHeader}>{group.label}</div>
               {group.sessions.map((session) => (

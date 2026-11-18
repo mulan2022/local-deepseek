@@ -6,6 +6,13 @@ import { rspack, type Configuration } from '@rspack/core'
 
 const dev = process.env.NODE_ENV !== 'production'
 const targets = ['chrome >= 105', 'edge >= 105', 'safari >= 16', 'firefox >= 110']
+const providerDevPaths: Record<string, string> = {
+  'https://open.bigmodel.cn': '/_provider_dev/glm',
+  'https://api.z.ai': '/_provider_dev/zai',
+  'https://dashscope.aliyuncs.com': '/_provider_dev/qwen',
+  'https://dashscope-intl.aliyuncs.com': '/_provider_dev/qwen-intl',
+  'https://dashscope-us.aliyuncs.com': '/_provider_dev/qwen-us',
+}
 const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
@@ -71,6 +78,11 @@ export const createConfig = ({
         type: 'javascript/auto',
       },
       { test: /\.(woff2?|ttf)$/, type: 'asset/resource' },
+      {
+        test: /\.md$/,
+        include: path.resolve(root, 'src/services/chat/prompts'),
+        type: 'asset/source',
+      },
     ],
   },
   plugins: [
@@ -80,13 +92,31 @@ export const createConfig = ({
       scriptLoading: 'defer',
       meta: { 'application-version': version },
     }),
-    new rspack.DefinePlugin({ __API_ORIGIN__: JSON.stringify(apiOrigin) }),
+    new rspack.DefinePlugin({
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+      __PROVIDER_DEV_PATHS__: JSON.stringify(dev ? providerDevPaths : {}),
+    }),
     new rspack.CopyRspackPlugin({
       patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
     }),
   ],
   performance: { hints: false },
-  devServer: { port: 8090, ...devServer },
+  devServer: {
+    host: '127.0.0.1',
+    port: 8090,
+    proxy: Object.entries(providerDevPaths).map(([target, prefix]) => ({
+      context: [
+        `${prefix}/api/paas/v4/models`,
+        `${prefix}/api/paas/v4/chat/completions`,
+        `${prefix}/api/v1/models`,
+        `${prefix}/compatible-mode/v1/chat/completions`,
+      ],
+      target,
+      changeOrigin: true,
+      pathRewrite: { [`^${prefix}`]: '' },
+    })),
+    ...devServer,
+  },
 })
 
 // eslint-disable-next-line import/no-default-export

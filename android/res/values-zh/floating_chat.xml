@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="floating_chat_title">聊天</string>
+    <string name="floating_chat_expand">打开完整聊天</string>
+    <string name="floating_chat_close">关闭悬浮聊天</string>
+    <string name="floating_chat_capture_preview">预览截图</string>
+</resources>

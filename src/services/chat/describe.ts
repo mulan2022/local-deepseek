@@ -35,7 +35,9 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       case 'unauthorized':
         return { text: translate('replyInvalidApiKey'), action: 'apiKey' }
       case 'insufficientBalance':
-        return { text: translate('replyInsufficientBalance'), action: 'topUp' }
+        return reply.provider
+          ? { text: translate('modelProviderBalance') }
+          : { text: translate('replyInsufficientBalance'), action: 'topUp' }
       case 'rateLimited':
         return { text: translate('replyRateLimited') }
       case 'serverBusy':

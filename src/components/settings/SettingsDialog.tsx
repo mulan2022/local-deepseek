@@ -22,6 +22,7 @@ import { regionCodes, getRegionName, provinces } from '../../services/location.j
 import {
   isChineseBrowser,
   setLocale,
+  setCompactSettings,
   setLocation,
   setThemePreference,
   setTtsVoice,
@@ -35,6 +36,8 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatMemorySettings } from './ChatMemorySettings.js'
+import { ModelSettings } from './ModelSettings.js'
+import { PhoneToolsSettings } from './PhoneToolsSettings.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
@@ -53,8 +56,10 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     label: 'settingDialogAsideGeneralOptionLabel',
     icon: <IconSettingsOutline16 />,
   },
+  { value: 'models', label: 'modelSettings', icon: <IconSettingsOutline16 /> },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
   { value: 'memory', label: 'chatMemory', icon: <IconDataOutline16 /> },
+  { value: 'phone', label: 'phoneTools', icon: <IconSettingsOutline16 /> },
 ]
 
 const SettingsContent = () => {
@@ -103,9 +108,14 @@ const SettingsContent = () => {
               <LocaleSetting />
               <TtsVoiceSetting />
               <LocationSetting />
+              <CompactSetting />
             </>
+          ) : section === 'models' ? (
+            <ModelSettings />
           ) : section === 'memory' ? (
             <ChatMemorySettings />
+          ) : section === 'phone' ? (
+            <PhoneToolsSettings />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />
@@ -134,6 +144,51 @@ const SettingsContent = () => {
       {historyImport.file ? <ImportConfirm historyImport={historyImport} /> : null}
       {historyDelete.opened ? <DeleteAllConfirm historyDelete={historyDelete} /> : null}
     </>
+  )
+}
+
+const CompactSetting = () => {
+  const t = useTranslate()
+  const settings = useSettings((state) => state.compact)
+  const [custom, setCustom] = useState(String(settings.custom))
+  const value = Number(custom)
+  const valid = Number.isSafeInteger(value) && value > 0
+  return (
+    <div className={styles.memorySettings}>
+      <label>
+        <input type="checkbox" checked={settings.enabled}
+          onChange={(event) => setCompactSettings({ enabled: event.target.checked })} />
+        {' '}{t('compactAuto')}
+      </label>
+      <label>
+        {t('compactThreshold')}{' '}
+        <select value={settings.preset} onChange={(event) => {
+          const preset = event.target.value
+          if (preset === '200000' || preset === '967000' || preset === 'custom') {
+            setCompactSettings({ preset })
+          }
+        }}>
+          <option value="200000">200K</option>
+          <option value="967000">967K</option>
+          <option value="custom">{t('compactCustom')}</option>
+        </select>
+      </label>
+      {settings.preset === 'custom' ? (
+        <label>
+          {t('compactCustomTokens')}{' '}
+          <input type="number" min={1} step={1} value={custom} aria-invalid={!valid}
+            onChange={(event) => {
+              const raw = event.target.value
+              setCustom(raw)
+              const next = Number(raw)
+              if (Number.isSafeInteger(next) && next > 0) {
+                setCompactSettings({ custom: next })
+              }
+            }} />
+        </label>
+      ) : null}
+      <p>{t('compactThresholdHelp')}</p>
+    </div>
   )
 }
 

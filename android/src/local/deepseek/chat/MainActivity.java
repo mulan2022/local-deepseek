@@ -9,60 +9,47 @@ import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
-import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
-import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.Toast;
 import android.view.WindowInsets;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.URLConnection;
-import java.util.Collections;
-import java.util.Map;
 
 public final class MainActivity extends Activity {
-    private static final String ORIGIN = "https://localhost";
-    private static final String CONTENT_SECURITY_POLICY =
-        "script-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; "
-        + "connect-src 'self' https://api.deepseek.com";
     private static final String AUDIO = PermissionRequest.RESOURCE_AUDIO_CAPTURE;
     private static final int PICK_FILE = 1;
     private static final int REQUEST_MICROPHONE = 2;
     private static final int SAVE_FILE = 3;
+    private static final int OVERLAY_PERMISSION = 4;
 
-    private final LocalFiles localFiles = new LocalFiles();
-    private WebView webView;
+    final LocalFiles localFiles = new LocalFiles();
+    private ChatWebView chat;
+    private FloatingChatWindow floatingChat;
+    private boolean openAfterPermission;
     private ValueCallback<Uri[]> fileChooser;
     private PermissionRequest microphone;
 
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
-        webView = new WebView(this);
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setAllowFileAccess(false);
-        settings.setAllowContentAccess(true);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        webView.setWebViewClient(new LocalContent());
+        chat = ChatWebView.get(this);
+        chat.attach(this);
+        floatingChat = new FloatingChatWindow(this, chat);
+        WebView webView = chat.view;
         webView.setWebChromeClient(new AndroidDialogs());
-        webView.addJavascriptInterface(localFiles, "AndroidLocalFiles");
         if (Build.VERSION.SDK_INT >= 30) {
             webView.setOnApplyWindowInsetsListener((view, windowInsets) -> {
+                if (floatingChat.isShowing()) return windowInsets;
                 Insets insets = windowInsets.getInsets(
                     WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
                     | WindowInsets.Type.ime());
@@ -71,64 +58,63 @@ public final class MainActivity extends Activity {
             });
         }
         setContentView(webView);
-        webView.loadUrl(ORIGIN + "/index.html");
     }
 
-    private static boolean isLocal(Uri uri) {
-        return "https".equals(uri.getScheme()) && "localhost".equals(uri.getAuthority());
+    @Override
+    protected void onResume() {
+        super.onResume();
+        chat.phoneTools.setResumed(this, true);
+        floatingChat.restore();
+        HeartbeatJob.resumeLocalSchedule(this);
+        if (openAfterPermission) {
+            openAfterPermission = false;
+            getWindow().getDecorView().post(this::openFloatingChat);
+        }
     }
 
-    private final class LocalContent extends WebViewClient {
-        @Override
-        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-            Uri uri = request.getUrl();
-            if (isLocal(uri)) return false;
-            if (request.isForMainFrame() && ("https".equals(uri.getScheme())
-                    || "http".equals(uri.getScheme()))) {
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
-                } catch (ActivityNotFoundException ignored) {
-                    Toast.makeText(MainActivity.this, "无法打开链接", Toast.LENGTH_SHORT).show();
-                }
-            }
-            return true;
-        }
+    @Override
+    protected void onPause() {
+        chat.phoneTools.setResumed(this, false);
+        super.onPause();
+    }
 
-        @Override
-        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            Uri uri = request.getUrl();
-            if (!isLocal(uri)) return null;
-            String path = uri.getPath();
-            if ("/".equals(path)) path = "/index.html";
-            if (!"/index.html".equals(path) && !"/LICENSE".equals(path)
-                    && (path == null || !path.startsWith("/static/")
-                        || path.contains("..") || path.contains("\\"))) {
-                return missingAsset();
-            }
-            String mimeType = URLConnection.guessContentTypeFromName(path);
-            if (path.endsWith(".js")) mimeType = "text/javascript";
-            if (path.endsWith(".css")) mimeType = "text/css";
-            if (path.endsWith(".woff2")) mimeType = "font/woff2";
-            if (path.endsWith(".woff")) mimeType = "font/woff";
-            if (path.endsWith(".ttf")) mimeType = "font/ttf";
-            if (mimeType == null) mimeType = path.equals("/LICENSE")
-                ? "text/plain" : "application/octet-stream";
-            try {
-                InputStream file = getAssets().open("web" + path);
-                Map<String, String> headers = path.equals("/index.html")
-                    ? Collections.singletonMap("Content-Security-Policy", CONTENT_SECURITY_POLICY)
-                    : Collections.emptyMap();
-                String charset = mimeType.startsWith("text/") ? "UTF-8" : null;
-                return new WebResourceResponse(mimeType, charset, 200, "OK", headers, file);
-            } catch (IOException error) {
-                return missingAsset();
-            }
-        }
+    @Override
+    protected void onDestroy() {
+        floatingChat.remove();
+        chat.detach(this);
+        super.onDestroy();
+    }
 
-        private WebResourceResponse missingAsset() {
-            return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found",
-                Collections.emptyMap(), new ByteArrayInputStream(new byte[0]));
+    void openFloatingChat() {
+        if (isFinishing() || isDestroyed()) return;
+        if (Settings.canDrawOverlays(this)) {
+            floatingChat.show();
+            return;
         }
+        try {
+            startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:" + getPackageName())), OVERLAY_PERMISSION);
+        } catch (ActivityNotFoundException unavailable) {
+            chat.notifyFloatingChat("unavailable");
+        }
+    }
+
+    void returnFromFloatingChat() {
+        try {
+            startActivity(new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+        } catch (RuntimeException unavailable) {
+            chat.notifyFloatingChat("unavailable");
+        }
+    }
+
+    void focusFloatingInput(boolean focused) {
+        floatingChat.focusInput(focused);
+    }
+
+    @Override public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        floatingChat.resize();
     }
 
     private final class AndroidDialogs extends WebChromeClient {
@@ -152,7 +138,7 @@ public final class MainActivity extends Activity {
             for (String resource : request.getResources()) {
                 requestsAudio |= AUDIO.equals(resource);
             }
-            if (!isLocal(request.getOrigin()) || !requestsAudio) {
+            if (!ChatWebView.isLocal(request.getOrigin()) || !requestsAudio) {
                 request.deny();
             } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                     == PackageManager.PERMISSION_GRANTED) {
@@ -188,6 +174,11 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
+        chat.phoneTools.onActivityResult(code, result, data);
+        if (code == OVERLAY_PERMISSION) {
+            if (Settings.canDrawOverlays(this)) openAfterPermission = true;
+            else chat.notifyFloatingChat("denied");
+        }
         if (code == PICK_FILE && fileChooser != null) {
             ValueCallback<Uri[]> callback = fileChooser;
             fileChooser = null;

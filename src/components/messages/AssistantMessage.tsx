@@ -32,6 +32,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   isLast,
   streaming,
   busy,
+  compact = false,
   versions,
   onSelectVersion,
 }: {
@@ -40,6 +41,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   isLast: boolean
   streaming: boolean
   busy: boolean
+  compact?: boolean
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
 }) {
@@ -57,8 +59,8 @@ export const AssistantMessage = memo(function AssistantMessage({
   const waiting = streaming && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
   return (
-    <div className={styles.message}>
-      {refused ? null : (
+    <div className={styles.message} data-chat-message-id={message.id}>
+      {refused || compact ? null : (
         <ReplyArea
           message={message}
           view={view}
@@ -76,7 +78,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           sources={view.sources}
         />
       ) : null}
-      {waiting ? (
+      {waiting || (compact && streaming && !answer) ? (
         <div className={styles.waiting}>
           {[0, 1, 2].map((index) => (
             <span key={index} className={styles.waitingDot} />
@@ -102,7 +104,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 <button
                   type="button"
                   className={styles.noticeAction}
-                  onClick={() => openSettings('data')}
+                  onClick={() => openSettings(message.provider ? 'models' : 'data')}
                 >
                   {t('changeApiKey')}
                 </button>
@@ -124,7 +126,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </span>
         </div>
       ) : null}
-      {!streaming && !refused && view.searchResults.length > 0 ? (
+      {!compact && !streaming && !refused && view.searchResults.length > 0 ? (
         <div
           className={clsx(styles.summary, panelEntry === summaryEntry && styles.summaryActive)}
           onClick={() => toggleSearchPanel(summaryEntry, view.searchResults)}
@@ -138,7 +140,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           </span>
         </div>
       ) : null}
-      {streaming ? null : (
+      {streaming || compact ? null : (
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
           <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>

@@ -1,5 +1,6 @@
 declare const styles: {
   readonly "wrapper": string;
+  readonly "compact": string;
   readonly "session": string;
   readonly "home": string;
   readonly "attachments": string;
@@ -15,6 +16,7 @@ declare const styles: {
   readonly "toggles": string;
   readonly "collapsedToggles": string;
   readonly "toggleLabel": string;
+  readonly "model": string;
   readonly "toggle": string;
   readonly "selected": string;
   readonly "right": string;

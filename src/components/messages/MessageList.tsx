@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
+import { useTranslate } from '../../i18n/index.js'
 import {
   buildMessageVersions,
   getVisibleMessages,
   type MessageVersions,
 } from '../../services/chat/branches.js'
-import { selectMessageVersion } from '../../services/chat/store.js'
+import { finishMessageJump, selectMessageVersion, useChatStore } from '../../services/chat/store.js'
 import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { ScrollToBottomContext } from './scrollContext.js'
 import { UserMessage } from './UserMessage.js'
+import clsx from 'clsx'
 import type { Message } from '../../services/chat/types.js'
 
 /**
@@ -36,19 +38,27 @@ const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
 export const MessageList = ({
   session,
   streaming,
+  busy = streaming,
   footer,
+  compact = false,
 }: {
   session: Session
   streaming: boolean
+  busy?: boolean
   footer: React.ReactNode
+  compact?: boolean
 }) => {
   const isMobile = useIsMobile()
+  const t = useTranslate()
+  const jump = useChatStore((state) => state.messageJump)
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef(true)
   const scrollTopRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
-  const messages = getVisibleMessages(session)
+  const path = getVisibleMessages(session)
+  const latestReply = path.findLast((message) => message.role === 'assistant')
+  const messages = compact ? latestReply ? [latestReply] : [] : path
   const [previousVersions, setPreviousVersions] = useState(() =>
     buildMessageVersions(session, new Map())
   )
@@ -139,34 +149,59 @@ export const MessageList = ({
     return () => el.removeEventListener('scroll', onScroll)
   }, [isMobile, scrollToBottom])
 
+  // 搜索结果可指向还未加载的会话，等对应消息渲染后再定位。
+  useLayoutEffect(() => {
+    if (jump?.sessionId !== session.id) {
+      return
+    }
+    const scroll = scrollRef.current
+    const target = scroll?.querySelector<HTMLElement>(
+      `[data-chat-message-id="${CSS.escape(jump.messageId)}"]`
+    )
+    if (scroll && target) {
+      stickyRef.current = false
+      scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16
+      scrollTopRef.current = scroll.scrollTop
+    }
+    finishMessageJump(jump)
+  }, [jump, session.id])
+
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
   return (
     <ScrollToBottomContext.Provider value={scrollToBottom}>
-      <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
+      <div ref={isMobile ? undefined : scrollRef} className={clsx(styles.container, compact && styles.compact)}>
         <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
           <div ref={contentRef} className={styles.column}>
             {messages.map((message, index) =>
               message.role === 'user' ? (
-                <UserMessage
-                  key={message.id}
-                  sessionId={session.id}
-                  message={message}
-                  retryUploadId={uploadRetryId}
-                  isFirst={index === 0}
-                  isLast={index === lastIndex || index === lastIndex - 1}
-                  busy={streaming}
-                  versions={versions.get(message.id) ?? EMPTY_VERSIONS}
-                  onSelectVersion={selectVersion}
-                />
+                message.heartbeat ? (
+                  <div key={message.id} data-chat-message-id={message.id} className={styles.heartbeat}>
+                    {t('phoneHeartbeatEvent', { time: new Date(message.heartbeat.at).toLocaleString() })}
+                  </div>
+                ) : (
+                  <UserMessage
+                    key={message.id}
+                    sessionId={session.id}
+                    message={message}
+                    retryUploadId={uploadRetryId}
+                    isFirst={index === 0}
+                    isLast={index === lastIndex || index === lastIndex - 1}
+                    busy={busy}
+                    versions={versions.get(message.id) ?? EMPTY_VERSIONS}
+                    onSelectVersion={selectVersion}
+                  />
+                )
               ) : (
                 <AssistantMessage
                   key={message.id}
                   sessionId={session.id}
                   message={message}
                   isLast={index === lastIndex}
-                  streaming={streaming && index === lastIndex}
-                  busy={streaming}
+                  streaming={streaming && index === lastIndex &&
+                    (message.status === 'pending' || message.status === 'streaming')}
+                  busy={busy}
+                  compact={compact}
                   versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                   onSelectVersion={selectVersion}
                 />

@@ -1,5 +1,6 @@
 import { getVisibleMessages } from './branches.js'
 import { loadSession, loadSessionSummaries } from './db.js'
+import { getReplyText } from './reply.js'
 import type { RccSnapshot } from './types.js'
 
 // Chat recall and BM25 adapted from dsh-mem (MIT, Copyright 2026 mulan2022).
@@ -7,6 +8,7 @@ const SESSION_LIMIT = 40
 const TURNS_PER_SESSION = 12
 const RECALL_BUDGET = 6_000
 const MAX_PATCH_LENGTH = 600
+const DREAM_REPLY_EXCERPT_LENGTH = 300
 
 type RecallSession = {
   id: string
@@ -15,12 +17,14 @@ type RecallSession = {
   turns: string[]
   turnIds: string[]
   turnTimes: number[]
+  assistantReplies?: string[]
 }
 
 export const loadRecallSessions = async (
   currentSessionId?: string,
   limit = SESSION_LIMIT,
-  selectedIds?: ReadonlySet<string>
+  selectedIds?: ReadonlySet<string>,
+  includeAssistantReplies = false
 ): Promise<RecallSession[]> => {
   const summaries = await loadSessionSummaries()
   const recent = summaries
@@ -33,16 +37,27 @@ export const loadRecallSessions = async (
       return []
     }
     const messages = getVisibleMessages(session)
-      .filter((message) => message.role === 'user')
-      .filter((message) => message.content.trim())
-    return messages.length
+    const turns = messages.flatMap((message, index) => {
+      if (message.role !== 'user' || !message.content.trim()) {
+        return []
+      }
+      const answer = includeAssistantReplies ? messages[index + 1] : undefined
+      return [{
+        message,
+        answer: answer?.role === 'assistant'
+          ? getReplyText(answer).trim().slice(0, DREAM_REPLY_EXCERPT_LENGTH)
+          : '',
+      }]
+    })
+    return turns.length
       ? [{
           id: session.id,
           title: session.title.slice(0, 80),
           date: new Date(session.updatedAt).toLocaleDateString('sv-SE'),
-          turns: messages.map((message) => message.content.trim()),
-          turnIds: messages.map((message) => message.id),
-          turnTimes: messages.map((message) => message.createdAt),
+          turns: turns.map(({ message }) => message.content.trim()),
+          turnIds: turns.map(({ message }) => message.id),
+          turnTimes: turns.map(({ message }) => message.createdAt),
+          ...(includeAssistantReplies ? { assistantReplies: turns.map(({ answer }) => answer) } : {}),
         }]
       : []
   })

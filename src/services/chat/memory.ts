@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { buildRecentRecall, findRccPatch, loadRecallSessions } from './recall.js'
 import { publicMemoryPayload, splitMemorySources, withoutMemorySources } from './memorySources.js'
+import { CHAT_MEMORY_CONTEXT, CHAT_MEMORY_GUIDE, CHAT_RECALL_CONTEXT } from './memoryPrompts.js'
 import type { ChatMemoryFrame, RccSnapshot } from './types.js'
 
 export const SECTION_KEYS = ['personal', 'work', 'thisMonth', 'earlierMonths', 'taste', 'tips'] as const
@@ -104,12 +105,13 @@ export const captureRcc = async (sessionId: string): Promise<RccSnapshot | null>
 
 export const buildChatMemoryFrame = async (
   sessionId: string, snapshot: RccSnapshot | null | undefined,
-  previousFrames: ChatMemoryFrame[], question: string, toolResults: readonly unknown[]
+  previousFrames: ChatMemoryFrame[], question: string
 ): Promise<ChatMemoryFrame | undefined> => {
   const { enabled, pinned, sections, entities } = readMemory()
   if (!enabled) {
     return
   }
+  const needsGuide = !previousFrames.some((frame) => frame.hasGuide)
   const recent = snapshot?.recent.length && !previousFrames.some((frame) => frame.hasRcc)
     ? snapshot.recent.map(({ date, title, quotes }) => ({ date, title, quotes }))
     : undefined
@@ -121,6 +123,9 @@ export const buildChatMemoryFrame = async (
         snapshot, question, seenQuotes
       )
     : undefined
+  const needsRecallGuide = Boolean(recent || relatedQuote) ||
+    (previousFrames.some((frame) => frame.hasRcc || frame.relatedQuote) &&
+      !previousFrames.some((frame) => frame.instructions?.includes(CHAT_RECALL_CONTEXT)))
   const currentVault = pinned || Object.values(sections).some(Boolean) ? { pinned, sections } : null
   const vaultSnapshot = JSON.stringify(withoutMemorySources(currentVault))
   const previousVault = [...previousFrames].reverse().find((frame) => frame.vaultSnapshot !== undefined)
@@ -129,15 +134,20 @@ export const buildChatMemoryFrame = async (
   const relevantEntities = entities.filter((entity) =>
     [entity.name, ...entity.aliases].some((name) => name.length >= 2 && query.includes(name.toLowerCase()))
   ).slice(0, 4)
-  if (!vaultChanged && !relevantEntities.length && !recent && !relatedQuote && !toolResults.length) {
+  if (!needsGuide && !needsRecallGuide && !vaultChanged && !relevantEntities.length) {
     return
   }
   return {
+    instructions: [
+      ...(needsGuide ? [CHAT_MEMORY_GUIDE] : []),
+      CHAT_MEMORY_CONTEXT,
+      ...(needsRecallGuide ? [CHAT_RECALL_CONTEXT] : []),
+    ].join('\n\n'),
+    ...(needsGuide ? { hasGuide: true } : {}),
     payload: JSON.stringify({
       vault: vaultChanged ? withoutMemorySources(currentVault) : undefined,
       recent, relatedQuote,
       entities: relevantEntities.length ? withoutMemorySources(relevantEntities) : undefined,
-      toolResults: toolResults.length ? withoutMemorySources(toolResults) : undefined,
     }),
     ...(recent ? { hasRcc: true } : {}),
     ...(vaultChanged ? { vaultSnapshot } : {}),

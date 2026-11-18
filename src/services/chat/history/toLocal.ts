@@ -49,6 +49,13 @@ const toUser = (message: ChatMessage): UserMessage => ({
   createdAt: time(message.inserted_at),
   content: message.fragments.map((item) => (item.type === 'REQUEST' ? item.content : '')).join(''),
   files: message.fragments.flatMap((item) => (item.type === 'FILE' ? item.files.map(toFile) : [])),
+  ...(message.local_heartbeat ? { heartbeat: {
+    at: time(message.inserted_at), localTime: message.local_heartbeat.local_time, task: message.local_heartbeat.note,
+    ...(message.local_heartbeat.schedule ? { schedule: {
+      localTime: message.local_heartbeat.schedule.local_time, count: message.local_heartbeat.schedule.count,
+      mode: message.local_heartbeat.schedule.mode, value: message.local_heartbeat.schedule.value,
+    } } : {}),
+  } } : {}),
 })
 
 /** 归档不带原调用 ID，以消息和片段位置生成稳定 ID，调用与结果共用。 */
@@ -229,6 +236,12 @@ const toAssistant = (message: ChatMessage): AssistantMessage => {
     search: message.search_enabled,
     prefix: false,
     status: replyStatus[message.status],
+    ...(message.local_token_usage ? {
+      usage: message.local_token_usage.latest, totalUsage: message.local_token_usage.total,
+    } : {}),
+    ...(message.local_compact ? {
+      compact: { summary: message.local_compact.summary, createdAt: time(message.local_compact.created_at) },
+    } : {}),
     // 拒绝回复丢弃模型正文和思考，保留模板提示与工具步骤。
     ...(refused ? { stopReason: 'refusal' as const } : {}),
     blocks: refused

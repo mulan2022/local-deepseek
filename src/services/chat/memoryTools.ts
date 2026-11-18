@@ -3,7 +3,7 @@ import { dreamPendingCount, runDream, useDreamState } from './dream.js'
 import { PINNED_LIMIT, readMemory, saveChatMemory, SECTION_KEYS } from './memory.js'
 import { withoutMemorySources } from './memorySources.js'
 import { loadRecallSessions, tokenize } from './recall.js'
-import type { UserMessage } from './types.js'
+import type { Message, UserMessage } from './types.js'
 
 const field = (description: string, choices?: readonly string[]) =>
   ({ type: 'string' as const, description, ...(choices ? { enum: choices } : {}) })
@@ -36,7 +36,7 @@ export const memoryTools = [
   }),
 ]
 
-type ToolContext = { sessionId: string; question: UserMessage; apiKey: string; signal: AbortSignal }
+type ToolContext = { sessionId: string; question: UserMessage; apiKey: string; signal: AbortSignal; compactedHistory?: Message[] }
 type ToolResponse = { ok: boolean; message: string; data?: unknown }
 
 const ok = (message: string, data?: unknown): ToolResponse => ({ ok: true, message, data })
@@ -56,10 +56,10 @@ const allowObserve = /(?:观察|修正|纠正|更正|改一下.{0,8}记忆|obser
 const denyAction = /(?:别|不要|不用|不必|暂不|无需|don't |do not |never )\s*(?:再|去|替我|帮我)?\s*(?:记|忘|删|写|运行|整理|跳过|remember|forget|run|skip)/i
 const capabilityQuestion = /^(?:(?:请问|话说|想问下)\s*[,，：:]?\s*)?(?:你(?:会|能|可以|有没有|是否)|do you|can you|how (?:do|can))/i
 
-const searchMemory = async (query: string, sessionId: string) => {
+const searchMemory = async (query: string, sessionId: string, compactedHistory?: Message[]) => {
   const memory = readMemory()
-  const sessions = await loadRecallSessions(sessionId)
-  const documents = [
+  const sessions = memory.enabled ? await loadRecallSessions(sessionId) : []
+  const vaultDocuments = memory.enabled ? [
     ...memory.pinned.split('\n').map((text) => ({ kind: 'pinned', text })),
     ...SECTION_KEYS.map((section) => ({
       kind: section, text: memory.sections[section], sources: memory.sectionSources[section],
@@ -71,6 +71,13 @@ const searchMemory = async (query: string, sessionId: string) => {
     ...sessions.flatMap(({ id, title, turns, turnIds }) => turns.map((text, index) =>
       ({ kind: 'chat', text, title, source: `${id}:${turnIds[index]}` })
     )),
+  ] : []
+  const documents = [
+    ...(compactedHistory ?? []).flatMap((message) => message.role === 'user'
+      ? message.heartbeat ? [] : [{ kind: 'current_chat', text: message.content }]
+      : message.blocks.flatMap((block) => block.type === 'text' && !block.isTemplate
+        ? [{ kind: 'current_chat', text: block.text }] : [])),
+    ...vaultDocuments,
   ]
   const terms = [...new Set(tokenize(query))]
   const needle = normalized(query)
@@ -92,14 +99,17 @@ const searchMemory = async (query: string, sessionId: string) => {
 
 export const executeMemoryTool = async (call: ToolUseBlock, context: ToolContext): Promise<ToolResponse> => {
   const { input, name } = call
-  const { question, sessionId, signal, apiKey } = context
+  const { question, sessionId, signal, apiKey, compactedHistory } = context
   const memory = readMemory()
-  if (signal.aborted || !memory.enabled) {
+  if (signal.aborted) {
+    return fail('本轮已停止。')
+  }
+  if (!memory.enabled && !(name === 'mem_search' && compactedHistory)) {
     return fail('本轮已停止，或跨会话记忆已关闭。')
   }
   if (name === 'mem_search') {
     const query = argument(input, 'query', 200)
-    return query ? ok('记忆检索完成。', await searchMemory(query, sessionId)) : fail('请提供检索词。')
+    return query ? ok('检索完成，返回的是历史资料。', await searchMemory(query, sessionId, compactedHistory)) : fail('请提供检索词。')
   }
   if (name === 'mem_entity') {
     const nameOrAlias = normalized(argument(input, 'name', 80))
@@ -125,6 +135,9 @@ export const executeMemoryTool = async (call: ToolUseBlock, context: ToolContext
       autoDream: memory.autoDream, skipped: memory.skippedSessions.includes(sessionId),
       pendingCount: await dreamPendingCount(), skippedCount: memory.skippedSessions.length,
     })
+  }
+  if (question.heartbeat) {
+    return fail('本轮由应用唤醒。修改记忆或执行 Dream 需要用户本轮明确提出。')
   }
   const request = question.content
   if (denyAction.test(request) || (capabilityQuestion.test(request.trim()) &&

@@ -1,5 +1,6 @@
 import type { TranslationMessage } from '../../i18n/index.js'
 import type { ApiErrorKind } from '../api/client.js'
+import type { ProviderId } from '../api/providers.js'
 import type {
   ChatModel,
   MessageUsage,
@@ -38,6 +39,13 @@ export type UserMessage = MessageBranch & {
   content: string
   files: FileAttachment[]
   createdAt: number
+  /** 由本机调度产生，content 仍只保存用户实际输入。 */
+  heartbeat?: {
+    at: number
+    localTime: string
+    task: string
+    schedule?: { localTime: string; count: number; mode: string; value: string }
+  }
 }
 
 /** 思考块：thinking_delta 累积，签名随 signature_delta 到达；历史轮次的思考服务端会丢弃，不回传 */
@@ -78,6 +86,9 @@ export type RccSnapshot = {
 
 export type ChatMemoryFrame = {
   payload: string
+  /** 保存当时实际注入的说明，旧帧仍按旧格式回放。 */
+  instructions?: string
+  hasGuide?: true
   hasRcc?: true
   vaultSnapshot?: string
   relatedQuote?: string
@@ -89,6 +100,8 @@ export type AssistantMessage = MessageBranch & {
   createdAt: number
   /** 未记录模型时为 null，续写使用当前默认模型。 */
   model: ChatModel | null
+  /** 旧会话未记录时沿用 DeepSeek。 */
+  provider?: ProviderId
   /** 请求时是否开启深度思考 */
   thinking?: boolean
   /** 请求时是否声明 deepseek_web_search；关闭时仍声明 deepseek_read_url */
@@ -97,6 +110,12 @@ export type AssistantMessage = MessageBranch & {
   latestReminder?: string
   /** 本次实际发送的记忆附文，后续轮次按回答版本原样回放。 */
   memoryFrame?: ChatMemoryFrame
+  /** 记忆开启时实际发送的联网说明，续写和历史回放沿用原文。 */
+  webSearchHint?: string
+  /** 手机工具执行回执或截图描述；截图字节不会进入历史。 */
+  phoneContext?: string
+  /** 本轮配置 Heartbeat 的回执，后续请求按原文回放。 */
+  heartbeatContext?: string
   /** 是否允许作为续写前缀；仍需满足回复状态与内容限制。 */
   prefix: boolean
   status: ReplyStatus
@@ -106,6 +125,8 @@ export type AssistantMessage = MessageBranch & {
   stopDetails?: StopDetails
   /** 最近一次请求的用量，续写后更新 */
   usage?: MessageUsage
+  totalUsage?: MessageUsage
+  compact?: { summary: string; createdAt: number }
   error?: {
     /** upload：发送前补传附件失败，请求没有发出 */
     kind: ApiErrorKind | 'upload'

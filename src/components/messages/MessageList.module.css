@@ -35,3 +35,17 @@
   margin: 0 auto;
   padding-bottom: 24px;
 }
+
+.compact .column {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  padding: 8px 12px 0;
+}
+.heartbeat {
+  align-self: center;
+  margin: 8px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  text-align: center;
+}

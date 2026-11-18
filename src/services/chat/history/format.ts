@@ -1,3 +1,5 @@
+import type { MessageUsage } from '../../api/types.js'
+
 /**
  * 历史会话导出产物（deepseek_data-*.zip）的类型定义。
  *
@@ -59,9 +61,16 @@ export type ChatMessage = {
   search_enabled: boolean
   /** 沿分支累计的上下文 token */
   accumulated_token_usage: number
+  local_token_usage?: { latest: MessageUsage; total: MessageUsage }
+  local_compact?: { summary: string; created_at: Iso8601Utc }
   inserted_at: Iso8601Utc
   /** 按发生顺序排列 */
   fragments: Fragment[]
+  local_heartbeat?: {
+    local_time: string
+    note: string
+    schedule?: { local_time: string; count: number; mode: string; value: string }
+  }
 }
 
 /** 用户的提问 */
