@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import { useUploads } from '../../services/attachments.js'
 import { loadFile } from '../../services/chat/db.js'
-import type { FileAttachment } from '../../services/chat/types.js'
+import { DEFAULT_FOLDER_ID, type FileAttachment } from '../../services/chat/types.js'
 import { isAndroidApp, saveLocalFile } from '../../services/download.js'
 import { IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
@@ -12,15 +12,15 @@ import { FileCard } from '../files/FileCard.js'
 import styles from './MessageFile.module.css'
 
 /** 原件从 IndexedDB 读出并生成本地地址；undefined 表示加载中，null 表示原件缺失。 */
-const useFileUrl = (id: string) => {
-  const [fileUrl, setFileUrl] = useState<{ id: string; url: string | null } | null>(null)
+const useFileUrl = (folderId: string, id: string) => {
+  const [fileUrl, setFileUrl] = useState<{ folderId: string; id: string; url: string | null } | null>(null)
   useEffect(() => {
     let objectUrl: string | null = null
     let cancelled = false
-    loadFile(id).then((blob) => {
+    loadFile(folderId, id).then((blob) => {
       if (!cancelled) {
         objectUrl = blob ? URL.createObjectURL(blob) : null
-        setFileUrl({ id, url: objectUrl })
+        setFileUrl({ folderId, id, url: objectUrl })
       }
     })
     return () => {
@@ -29,8 +29,8 @@ const useFileUrl = (id: string) => {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [id])
-  return fileUrl?.id === id ? fileUrl.url : undefined
+  }, [folderId, id])
+  return fileUrl?.folderId === folderId && fileUrl.id === id ? fileUrl.url : undefined
 }
 
 /** 历史或失效附件的补传状态：只在还没有 serverId 时显示 */
@@ -51,14 +51,17 @@ const useUploadState = (file: FileAttachment) =>
  */
 export const MessageFile = ({
   file,
+  folderId = DEFAULT_FOLDER_ID,
   onRetry,
 }: {
   file: FileAttachment
+  /** 临时默认到默认文件夹，调用方接入后应传入消息所属文件夹。 */
+  folderId?: string
   /** 本条消息补传失败且可重试时提供 */
   onRetry: (() => void) | null
 }) => {
   const t = useTranslate()
-  const url = useFileUrl(file.id)
+  const url = useFileUrl(folderId, file.id)
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
   const upload = useUploadState(file)
   const uploading = upload?.status === 'uploading'
@@ -69,7 +72,7 @@ export const MessageFile = ({
   const retry = retryable ? onRetry : null
   const openFile = () => {
     if (isAndroidApp()) {
-      void loadFile(file.id)
+      void loadFile(folderId, file.id)
         .then((blob) => blob && saveLocalFile(file.name, blob))
         .catch((error: unknown) => showToast(error instanceof Error ? error.message : String(error)))
     } else if (url) {

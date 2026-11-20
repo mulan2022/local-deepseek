@@ -10,6 +10,8 @@
   padding: 4px 8px;
   border-radius: 10px;
   background-color: var(--dsw-alias-tooltip-bg);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
   color: var(--dsw-static-neutral-bluish-00);
   font-size: 12px;
   line-height: 1.5;

@@ -26,7 +26,7 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
       for (const summary of sessions) {
         const session = Object.hasOwn(sessionCache, summary.id)
           ? sessionCache[summary.id]
-          : await db.loadSession(summary.id)
+          : await db.loadSession(summary.folderId, summary.id)
         if (!session) {
           throw new Error(`History session disappeared during export: ${summary.id}`)
         }
@@ -49,22 +49,23 @@ export const importHistory = (
   onProgress?: (entries: number | 'saving') => void,
 ): Promise<number> =>
   enqueueBackup(async () => {
+    const folderId = useChatStore.getState().activeFolderId
     const { checkArchiveFormat, importArchive } = await import('./history/importArchive.js')
     await checkArchiveFormat(file)
     const count = await replaceHistory(async () => {
       onProgress?.(0)
-      await importArchive(file, onProgress)
+      await importArchive(file, folderId, onProgress)
       onProgress?.('saving')
-    })
+    }, folderId)
     try {
-      saveChatMemory({ dreamNeedsSelection: true, nextDreamSessionIds: null })
+      saveChatMemory({ dreamNeedsSelection: true, nextDreamSessionIds: null }, folderId)
     } catch (error) {
       db.reportStorageError('reset Dream selection')(error)
     }
     return count
   })
 
-/** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */
+/** 确认删除后调用：以空历史原子替换当前文件夹的本地会话与附件，保留 API Key 和其他设置。 */
 export const clearHistory = (): Promise<void> =>
   enqueueBackup(async () => {
     await replaceHistory(async () => {})

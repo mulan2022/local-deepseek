@@ -4,4 +4,18 @@
     <string name="floating_chat_expand">打开完整聊天</string>
     <string name="floating_chat_close">关闭悬浮聊天</string>
     <string name="floating_chat_capture_preview">预览截图</string>
+    <string name="floating_chat_ball">聊天球：可拖动，双击回复，长按说话</string>
+    <string name="floating_chat_menu">悬浮聊天菜单</string>
+    <string name="floating_chat_guide">长按悬浮球说话，松手发送语音转写。\n点右侧按钮开始或停止 OCR 观察。\n双击悬浮球打开对话框。</string>
+    <string name="floating_chat_guide_done">知道了</string>
+    <string name="floating_voice_hold_hint">长按悬浮球说话，松手转写并发送。</string>
+    <string name="floating_voice_unavailable">悬浮聊天暂时无法使用麦克风，请重新打开悬浮球后重试。</string>
+    <string name="floating_voice_notification">悬浮聊天语音输入可用</string>
+    <string name="floating_voice_preparing">正在准备麦克风</string>
+    <string name="floating_voice_recording">正在录音，松手转写</string>
+    <string name="floating_voice_ready">已到录音时长上限，松手转写</string>
+    <string name="floating_voice_transcribing">正在转写</string>
+    <string name="floating_chat_stop_ocr">停止观察</string>
+    <string name="floating_chat_start_ocr">开始观察</string>
+    <string name="floating_chat_collapse">收起为小球</string>
 </resources>

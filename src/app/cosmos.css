@@ -1,0 +1,198 @@
+/*
+ * Accretion skin. Re-maps the upstream DeepSeek tokens in theme.css, so the upstream token file can still
+ * be diffed against the original demo. Conversations use the quiet solid surfaces below; only the new-chat
+ * screen (body.welcome) adds frosted glass over the flowing accretion disk.
+ */
+body {
+  --accretion: linear-gradient(120deg, #ff7b42 0%, #ffa45c 45%, #ffc46b 100%);
+  --glass-blur: 0px;
+  --accent-shadow: none;
+  --accent-shadow-strong: none;
+
+  --cosmos-ground: #f5f5f8;
+  --cosmos-veil: rgba(245, 245, 248, 0.9);
+  --glass-fill: #ffffff;
+  --glass-fill-strong: #ffffff;
+  --glass-border: rgba(40, 30, 80, 0.1);
+  --glass-highlight: transparent;
+  --glass-shadow: 0 6px 20px rgba(40, 30, 80, 0.06);
+  --accretion-glow: 0 0 0 1px rgba(226, 98, 44, 0.4);
+
+  --dsw-alias-bg-base: #f5f5f8;
+  --dsw-alias-bg-layer-2: #ffffff;
+  --dsw-alias-bg-layer-3: #ffffff;
+  --dsw-alias-bg-skeleton: rgba(40, 30, 80, 0.06);
+  --dsw-alias-border-inverted: rgba(40, 30, 80, 0.06);
+  --dsw-alias-border-l1: rgba(40, 30, 80, 0.06);
+  --dsw-alias-border-l2-darkmode-thin: rgba(40, 30, 80, 0.1);
+  --dsw-alias-border-l2: rgba(40, 30, 80, 0.1);
+  --dsw-alias-border-l3: rgba(40, 30, 80, 0.13);
+  --dsw-alias-brand-primary: #e2622c;
+  --dsw-alias-brand-primary-invert: #9a3f14;
+  --dsw-alias-brand-text: #b8501e;
+  --dsw-alias-button-primary-fill: #ff9a55;
+  --dsw-alias-button-primary-hover: #ffaa66;
+  --dsw-alias-label-primary-foreground: #1b0f08;
+  --dsw-alias-button-ghost-active-border: rgba(226, 98, 44, 0.4);
+  --dsw-alias-button-ghost-active-fill: rgba(255, 140, 70, 0.12);
+  --dsw-alias-button-ghost-active-hover: rgba(255, 140, 70, 0.2);
+  --dsw-alias-button-elevated-fill: #ffffff;
+  --dsw-alias-interactive-bg-hover: rgba(40, 30, 80, 0.06);
+  --dsw-alias-interactive-bg-active: rgba(40, 30, 80, 0.1);
+  --dsw-alias-interactive-bg-hover-accent: rgba(40, 30, 80, 0.12);
+  --dsw-alias-label-primary: #181922;
+  --dsw-alias-label-secondary: #4b4d58;
+  --dsw-alias-label-tertiary: #686a75;
+  --dsw-alias-label-caption: #8b8d97;
+  --dsw-alias-label-dimmed: #c9cad2;
+  --dsw-alias-markdown-code-block: #ffffff;
+  --dsw-alias-markdown-code-block-banner: rgba(40, 30, 80, 0.04);
+  --dsw-alias-markdown-inline-code: rgba(40, 30, 80, 0.06);
+  --dsw-alias-markdown-citation: rgba(40, 30, 80, 0.06);
+  --dsw-alias-markdown-placeholder: rgba(40, 30, 80, 0.04);
+  --dsw-alias-markdown-tag: rgba(40, 30, 80, 0.05);
+  --dsw-alias-toast-bg: rgba(28, 26, 40, 0.94);
+  --dsw-alias-tooltip-bg: rgba(28, 26, 40, 0.94);
+  --dsw-specific-bubble: rgba(255, 150, 90, 0.13);
+  --dsw-specific-input-major: #ffffff;
+  --dsw-specific-login-input: rgba(40, 30, 80, 0.05);
+  --dsw-specific-menu: #ffffff;
+  --dsw-specific-selector: rgba(40, 30, 80, 0.06);
+  --dsw-specific-sidebar-fill: #eeeef3;
+  --dsw-specific-sidebar-nav-item-hover: rgba(40, 30, 80, 0.05);
+  --dsw-specific-sidebar-nav-item-active-accent: rgba(255, 150, 90, 0.16);
+  --dsw-shadow-lv3: 0 0 0 1px var(--glass-border), 0 10px 28px rgba(40, 30, 80, 0.1);
+  --sider-header-fill: var(--dsw-specific-sidebar-fill);
+
+  background-color: var(--cosmos-ground);
+}
+
+body[data-ds-dark-theme] {
+  --cosmos-ground: #0e0f15;
+  --cosmos-veil: rgba(14, 15, 21, 0.9);
+  --glass-fill: #16171f;
+  --glass-fill-strong: #13141b;
+  --glass-border: rgba(255, 228, 190, 0.08);
+  --glass-highlight: transparent;
+  --glass-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --accretion-glow: 0 0 0 1px rgba(255, 180, 110, 0.38);
+
+  --dsw-alias-bg-base: #0e0f15;
+  --dsw-alias-bg-layer-2: #15161e;
+  --dsw-alias-bg-layer-3: #1b1c25;
+  --dsw-alias-bg-skeleton: rgba(255, 241, 214, 0.08);
+  --dsw-alias-border-inverted: rgba(255, 228, 190, 0.08);
+  --dsw-alias-border-l1: rgba(255, 228, 190, 0.06);
+  --dsw-alias-border-l2-darkmode-thin: rgba(255, 228, 190, 0.08);
+  --dsw-alias-border-l2: rgba(255, 228, 190, 0.11);
+  --dsw-alias-border-l3: rgba(255, 228, 190, 0.15);
+  --dsw-alias-brand-primary: #ff9a55;
+  --dsw-alias-brand-primary-invert: #ffe3c2;
+  --dsw-alias-brand-text: #ffc46b;
+  --dsw-alias-button-primary-fill: #ff9a55;
+  --dsw-alias-button-primary-hover: #ffb36e;
+  --dsw-alias-label-primary-foreground: #1b0f08;
+  --dsw-alias-button-ghost-active-border: rgba(255, 180, 110, 0.45);
+  --dsw-alias-button-ghost-active-fill: rgba(255, 154, 85, 0.14);
+  --dsw-alias-button-ghost-active-hover: rgba(255, 154, 85, 0.22);
+  --dsw-alias-button-elevated-fill: #1b1c25;
+  --dsw-alias-button-contrast-fill: #f4f0ea;
+  --dsw-alias-label-primary-inverted: #14151c;
+  --dsw-alias-interactive-bg-hover: rgba(255, 241, 214, 0.07);
+  --dsw-alias-interactive-bg-active: rgba(255, 241, 214, 0.12);
+  --dsw-alias-interactive-bg-hover-accent: rgba(255, 241, 214, 0.16);
+  --dsw-alias-label-primary: #f4f0ea;
+  --dsw-alias-label-secondary: #bdb7b0;
+  --dsw-alias-label-tertiary: #8f8b87;
+  --dsw-alias-label-caption: #75716e;
+  --dsw-alias-label-dimmed: #4a4745;
+  --dsw-alias-markdown-code-block: #0a0b10;
+  --dsw-alias-markdown-code-block-banner: rgba(255, 241, 214, 0.05);
+  --dsw-alias-markdown-inline-code: rgba(255, 241, 214, 0.09);
+  --dsw-alias-markdown-citation: rgba(255, 241, 214, 0.1);
+  --dsw-alias-markdown-placeholder: rgba(255, 241, 214, 0.06);
+  --dsw-alias-markdown-tag: rgba(255, 241, 214, 0.08);
+  --dsw-alias-toast-bg: rgba(24, 25, 34, 0.96);
+  --dsw-alias-tooltip-bg: rgba(28, 29, 38, 0.96);
+  --dsw-specific-bubble: rgba(255, 150, 90, 0.12);
+  --dsw-specific-input-major: #16171f;
+  --dsw-specific-login-input: rgba(255, 241, 214, 0.06);
+  --dsw-specific-menu: #1a1b24;
+  --dsw-specific-selector: rgba(255, 241, 214, 0.08);
+  --dsw-specific-sidebar-fill: #0a0b10;
+  --dsw-specific-sidebar-nav-item-hover: rgba(255, 241, 214, 0.06);
+  --dsw-specific-sidebar-nav-item-active-accent: rgba(255, 150, 90, 0.14);
+  --dsw-shadow-lv3: 0 0 0 1px var(--glass-border), 0 12px 32px rgba(0, 0, 0, 0.5);
+  --scroll-color: rgba(255, 228, 190, 0.14);
+  --scroll-color-hover: rgba(255, 228, 190, 0.24);
+}
+
+/* New-chat screen: frosted glass over the flowing disk. Dark is the black-hole night;
+   light is the same disk seen through daylight haze. */
+body.welcome {
+  --glass-blur: 22px;
+  --accent-shadow: 0 0 14px rgba(255, 123, 66, 0.32);
+  --accent-shadow-strong: 0 0 22px rgba(255, 123, 66, 0.5);
+
+  --cosmos-ground: #eceef5;
+  --cosmos-haze-warm: rgba(255, 150, 90, 0.32);
+  --cosmos-haze-cool: rgba(130, 165, 255, 0.26);
+  --cosmos-flow-opacity: 0.55;
+  --cosmos-grain-opacity: 0.035;
+  --cosmos-veil: rgba(236, 238, 245, 0.86);
+  --glass-fill: rgba(255, 255, 255, 0.52);
+  --glass-fill-strong: rgba(255, 255, 255, 0.84);
+  --glass-border: rgba(40, 30, 80, 0.09);
+  --glass-highlight: rgba(255, 255, 255, 0.75);
+  --glass-shadow: 0 16px 40px rgba(40, 30, 80, 0.1), inset 0 1px 0 var(--glass-highlight);
+  --accretion-glow: 0 0 0 1px rgba(226, 98, 44, 0.32), 0 0 24px rgba(255, 123, 66, 0.2);
+
+  --dsw-alias-bg-base: rgba(255, 255, 255, 0.62);
+  --dsw-alias-bg-layer-2: rgba(255, 255, 255, 0.74);
+  --dsw-alias-bg-layer-3: rgba(255, 255, 255, 0.8);
+  --dsw-alias-button-elevated-fill: rgba(255, 255, 255, 0.72);
+  --dsw-specific-input-major: rgba(255, 255, 255, 0.6);
+  --dsw-specific-menu: rgba(255, 255, 255, 0.88);
+  --dsw-specific-sidebar-fill: rgba(255, 255, 255, 0.42);
+  --dsw-shadow-lv3: 0 0 0 1px var(--glass-border), 0 16px 40px rgba(40, 30, 80, 0.12);
+  --sider-header-fill: var(--glass-fill-strong);
+}
+
+body.welcome[data-ds-dark-theme] {
+  --cosmos-ground: #05060b;
+  --cosmos-haze-warm: rgba(255, 123, 66, 0.16);
+  --cosmos-haze-cool: rgba(141, 180, 255, 0.1);
+  --cosmos-flow-opacity: 1;
+  --cosmos-grain-opacity: 0.05;
+  --cosmos-veil: rgba(5, 6, 11, 0.86);
+  --glass-fill: rgba(17, 18, 26, 0.52);
+  --glass-fill-strong: rgba(13, 14, 21, 0.86);
+  --glass-border: rgba(255, 228, 190, 0.1);
+  --glass-highlight: rgba(255, 241, 214, 0.08);
+  --glass-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), inset 0 1px 0 var(--glass-highlight);
+  --accretion-glow: 0 0 0 1px rgba(255, 180, 110, 0.36), 0 0 26px rgba(255, 123, 66, 0.22);
+
+  --dsw-alias-bg-base: rgba(12, 13, 19, 0.62);
+  --dsw-alias-bg-layer-2: rgba(16, 17, 25, 0.74);
+  --dsw-alias-bg-layer-3: rgba(22, 23, 32, 0.8);
+  --dsw-alias-button-elevated-fill: rgba(255, 241, 214, 0.07);
+  --dsw-specific-input-major: rgba(16, 17, 25, 0.58);
+  --dsw-specific-menu: rgba(18, 19, 27, 0.88);
+  --dsw-specific-sidebar-fill: rgba(9, 10, 15, 0.55);
+  --dsw-shadow-lv3: 0 0 0 1px var(--glass-border), 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+/* Conversations stay flat: no blur layers re-compositing behind text. */
+body:not(.welcome) * {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+::selection {
+  background: rgba(255, 154, 85, 0.32);
+}
+
+/* The Android floating panel draws its own glass behind a transparent WebView. */
+body.floating {
+  background-color: transparent;
+}

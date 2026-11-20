@@ -1,10 +1,13 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
 import { memo } from 'react'
-import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
+import { IconRefreshOutline16, IconWarningOutline16, IconStar16 } from '../base/icons.js'
+import { favoriteId } from '../../services/chat/favoriteTypes.js'
+import { toggleFavorite, useFavorites } from '../../services/chat/favorites.js'
+import { showToast } from '../base/toastState.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
-import { continueReply, regenerateReply } from '../../services/chat/store.js'
+import { continueReply, regenerateReply, useChatStore } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { AssistantMessage as AssistantMessageType } from '../../services/chat/types.js'
 import { openSettings } from '../settings/settingsDialogState.js'
@@ -46,6 +49,11 @@ export const AssistantMessage = memo(function AssistantMessage({
   onSelectVersion: SelectMessageVersion
 }) {
   const t = useTranslate()
+  const folderId = useChatStore((state) => state.activeFolderId)
+  const favoriteKey = favoriteId(folderId, sessionId, message.id)
+  const saved = useFavorites(state => state.items.some(item => item.id === favoriteKey))
+  const favoritePending = useFavorites(state => !!state.pending[favoriteKey])
+  const favoritesReady = useFavorites(state => state.status === 'ready')
   const view = useReplyView(message, streaming)
   const panelEntry = useSearchPanel((state) => state.entry)
   const notice = streaming ? null : describeReply(message)
@@ -143,8 +151,21 @@ export const AssistantMessage = memo(function AssistantMessage({
       {streaming || compact ? null : (
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
-          <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
+          <div className={clsx(styles.actions, (isLast || saved) && styles.alwaysShow)}>
             {copyText ? <CopyButton text={copyText} /> : null}
+            {responseText && !refused ? <IconButton
+              icon={<IconStar16 filled={saved} />}
+              tooltip={t(saved ? 'favoriteRemove' : 'favoriteAdd')}
+              tooltipPlacement="bottom"
+              aria-pressed={saved}
+              className={saved ? styles.favorite : undefined}
+              disabled={busy || favoritePending || !favoritesReady}
+              onClick={async () => {
+                if (!(await toggleFavorite(sessionId, message.id, responseText))) {
+                  showToast({ key: 'favoriteSaveFailed', type: 'error' })
+                }
+              }}
+            /> : null}
             {responseText && !refused ? (
               <ReadAloudButton messageId={message.id} text={responseText} />
             ) : null}

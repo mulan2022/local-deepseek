@@ -80,6 +80,7 @@ export const checkArchiveFormat = async (file: File): Promise<void> => {
  */
 export const importArchive = async (
   file: File,
+  folderId: string,
   onProgress?: (entries: number) => void,
 ): Promise<void> => {
   if (!(await isZipFile(file))) {
@@ -101,7 +102,7 @@ export const importArchive = async (
     }
     const data = await readEntry(entry)
     const type = imageType(new Uint8Array(await data.slice(0, 16).arrayBuffer()))
-    await db.saveStagingFiles([{ id, blob: new Blob([data], { type }) }])
+    await db.saveStagingFiles(folderId, [{ id, blob: new Blob([data], { type }) }])
     stored.set(id, type)
   }
 
@@ -128,7 +129,7 @@ export const importArchive = async (
         for (const [imagePath, id] of local.images) {
           images.set(imagePath, id)
         }
-        await db.addStagingSession(local.session)
+        await db.addStagingSession({ ...local.session, folderId })
       } else if (path === INDEX_PATH && !index) {
         index = readSessionIndex(await readJson(entry))
       } else if (
@@ -163,5 +164,5 @@ export const importArchive = async (
   ) {
     fail('backupIncomplete')
   }
-  await db.updateStagingFileTypes(stored)
+  await db.updateStagingFileTypes(folderId, stored)
 }

@@ -1,6 +1,7 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
+import { captureRequest } from './requestCapture.js'
 import type {
   ApiErrorBody,
   CreateMessageRequest,
@@ -73,15 +74,18 @@ export const request = async (
   init: RequestInit,
   transport: (url: string, init: RequestInit) => Promise<Response> = fetch
 ): Promise<Response> => {
+  const captured = captureRequest(url, init)
   let response: Response
   try {
     response = await transport(url, init)
   } catch (error) {
+    captured?.()
     if (init.signal?.aborted) {
       throw error
     }
     throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
+  captured?.(response.status)
   if (!response.ok) {
     throw await readErrorResponse(response)
   }

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon silhouette (Android 13+): the horizon is left empty and the disk passes in front of it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M34.5,52 a19.5,19.5 0 1,0 39,0 a19.5,19.5 0 1,0 -39,0 Z M40.8,54.6 a13.2,13.2 0 1,0 26.4,0 a13.2,13.2 0 1,0 -26.4,0 Z" />
+    <group>
+        <clip-path android:pathData="M0,56h108v52h-108z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M24,56 a30,8.5 0 1,0 60,0 a30,8.5 0 1,0 -60,0 Z M33,54.8 a21,4.4 0 1,0 42,0 a21,4.4 0 1,0 -42,0 Z" />
+    </group>
+    <group>
+        <clip-path android:pathData="M0,0h40v56h-40z M68,0h40v56h-40z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M24,56 a30,8.5 0 1,0 60,0 a30,8.5 0 1,0 -60,0 Z M33,54.8 a21,4.4 0 1,0 42,0 a21,4.4 0 1,0 -42,0 Z" />
+    </group>
+</vector>

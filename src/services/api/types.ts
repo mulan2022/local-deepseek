@@ -122,7 +122,7 @@ export type ServerToolBlock =
 export type ToolUseBlock = { type: 'tool_use'; id: string; name: string; input: unknown }
 export type InlineImageBlock = {
   type: 'image'
-  source: { type: 'base64'; media_type: 'image/jpeg'; data: string }
+  source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/webp'; data: string }
 }
 export type ToolResultBlock = {
   type: 'tool_result'
@@ -188,7 +188,9 @@ export type ClientTool = {
   description: string
   input_schema: {
     type: 'object'
-    properties: Record<string, { type: 'string'; description?: string; enum?: readonly string[] }>
+    properties: Record<string,
+      | { type: 'string'; description?: string; enum?: readonly string[] }
+      | { type: 'array'; items: { type: 'string' }; minItems?: number; maxItems?: number; description?: string }>
     required: string[]
     additionalProperties: false
   }

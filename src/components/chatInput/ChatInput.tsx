@@ -7,13 +7,12 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { setSearch, setThinking, useSettings } from '../../services/settings.js'
-import { usesDeepSeekWebTools } from '../../services/api/providers.js'
+import { getProviderKey, setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { supportsLocalAttachments, supportsProviderTools, usesDeepSeekWebTools } from '../../services/api/providers.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import { isChatInputBusy, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import {
   addDraftFiles,
-  EMPTY_DRAFT,
   getDraft,
   prepareDraftMessage,
   removeDraftAttachment,
@@ -27,9 +26,10 @@ import { Tooltip } from '../base/Tooltip.js'
 import { ensureApiKey, openSettings } from '../settings/settingsDialogState.js'
 import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
-import { ACCEPT, useUploads } from '../../services/attachments.js'
+import { ACCEPT, acceptsChatAttachment, localAttachmentAccept, useUploads } from '../../services/attachments.js'
 import { DraftAttachments } from './DraftAttachments.js'
 import { useVoiceInput } from './useVoiceInput.js'
+import { useFloatingVoice } from './useFloatingVoice.js'
 import { VoiceButton } from './VoiceButton.js'
 import { Spectrum } from './Spectrum.js'
 import { useTranslate } from '../../i18n/index.js'
@@ -37,22 +37,24 @@ import styles from './ChatInput.module.css'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
 export const ChatInput = memo(function ChatInput({ sessionId, compact = false }: { sessionId: string | null; compact?: boolean }) {
-  // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务保留。
-  return <Input key={sessionId === null ? 'new' : `session:${sessionId}`} sessionId={sessionId} compact={compact} />
+  const folderId = useChatStore((state) => state.activeFolderId)
+  // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务按文件夹保留。
+  return <Input key={`${folderId}:${sessionId ?? 'new'}`} folderId={folderId} sessionId={sessionId} compact={compact} />
 })
 
-const Input = ({ sessionId, compact }: { sessionId: string | null; compact: boolean }) => {
+const Input = ({ folderId, sessionId, compact }: { folderId: string; sessionId: string | null; compact: boolean }) => {
   const t = useTranslate()
-  const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
+  const draft = useDrafts(() => getDraft(sessionId, folderId))
   const { text, attachments } = draft
   const setText = (value: string) => setDraftText(sessionId, value)
-  const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
   const streaming = useChatStore(
-    (state) => sessionId !== null && (Object.hasOwn(state.streaming, sessionId) || Object.hasOwn(state.compacting, sessionId))
+    (state) => sessionId !== null && isChatInputBusy(state, sessionId)
   )
   const thinking = useSettings((state) => state.thinking)
   const model = useSettings((state) => state.selectedModel)
   const deepseekTools = usesDeepSeekWebTools(model)
+  const attachmentsAvailable = deepseekTools || supportsLocalAttachments(model)
+  const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks, deepseekTools) !== null)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
@@ -81,14 +83,21 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
     if (files.length === 0 || useChatStore.getState().importingHistory) {
       return
     }
-    if (!usesDeepSeekWebTools(useSettings.getState().selectedModel)) {
+    const settings = useSettings.getState()
+    const selection = settings.selectedModel
+    const cloudFiles = usesDeepSeekWebTools(selection)
+    if (!cloudFiles && !supportsLocalAttachments(selection)) {
       showToast({ key: 'modelAttachmentsUnavailable', type: 'error' })
+      return
+    }
+    if (files.some(({ name }) => !acceptsChatAttachment(selection, name))) {
+      showToast({ key: 'localAttachmentUnsupported', type: 'error' })
       return
     }
     if (!ensureApiKey()) {
       return
     }
-    const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
+    const error = addDraftFiles(sessionId, files, cloudFiles ? getProviderKey(settings, 'deepseek') : undefined)
     if (error) {
       showToast(error)
     }
@@ -120,7 +129,7 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
     const end = textarea?.selectionEnd ?? current.length
     setText(current.slice(0, start) + transcript + current.slice(end))
     requestAnimationFrame(() => {
-      textarea?.focus({ preventScroll: true })
+      if (!compact) { textarea?.focus({ preventScroll: true }) }
       textarea?.setSelectionRange(start + transcript.length, start + transcript.length)
     })
   })
@@ -137,21 +146,50 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
     [cancelVoice]
   )
 
+  useEffect(() => { if (compact) { cancelVoice() } }, [compact, cancelVoice])
+  useFloatingVoice(compact, (transcript) => {
+    const state = useChatStore.getState()
+    if (state.activeFolderId !== folderId || state.activeId !== sessionId) { return }
+    const settings = useSettings.getState()
+    const busy = sessionId !== null && isChatInputBusy(state, sessionId)
+    if (!busy && getProviderKey(settings, settings.selectedModel.provider) && sendMessage(sessionId, transcript)) {
+      stopReadAloud()
+      return
+    }
+    const previous = getDraft(sessionId, folderId).text
+    setText(previous ? `${previous}\n${transcript}` : transcript)
+    showToast({ key: 'voiceInputSavedToDraft' })
+  })
+
   // 移动端录音时用频谱替代输入框内容
   const recording = voice.status === 'recording'
 
-  // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
+  // DeepSeek 草稿提前上传，其他线路在发送时读取本地文件。
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
 
+  const ensureSearchKey = () => {
+    const settings = useSettings.getState()
+    if (usesDeepSeekWebTools(settings.selectedModel) || getProviderKey(settings, 'deepseek')) {
+      return true
+    }
+    showToast({ key: 'webSearchMissingKey', type: 'error' })
+    openSettings('data')
+    return false
+  }
+
   const send = () => {
-    if (!usesDeepSeekWebTools(useSettings.getState().selectedModel) && getDraft(sessionId).attachments.length) {
-      showToast({ key: 'modelAttachmentsUnavailable', type: 'error' })
+    const selection = useSettings.getState().selectedModel
+    if (getDraft(sessionId).attachments.some(({ file }) => !acceptsChatAttachment(selection, file.name))) {
+      showToast({
+        key: supportsLocalAttachments(selection) ? 'localAttachmentUnsupported' : 'modelAttachmentsUnavailable',
+        type: 'error',
+      })
       return
     }
     if (
       useChatStore.getState().importingHistory ||
       voice.status !== 'idle' ||
-      !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks)
+      !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks, usesDeepSeekWebTools(selection))
     ) {
       return
     }
@@ -177,7 +215,7 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
         }
       }}
     >
-      <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
+      <DraftAttachments items={attachments} useCloudFiles={deepseekTools} onRetry={retryFile} onRemove={removeFile} />
       <div className={styles.textareaWrapper}>
         <textarea
           ref={textareaRef}
@@ -242,13 +280,17 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
           </Tooltip> : null}
-          {deepseekTools ? <Tooltip content={t('deactivatedSearchTooltip')}>
+          {supportsProviderTools(model) ? <Tooltip content={t(deepseekTools ? 'deactivatedSearchTooltip' : 'webSearchTooltip')}>
             <button
               type="button"
               className={clsx(styles.toggle, search && styles.selected)}
               aria-label={t('search')}
               aria-pressed={search}
-              onClick={() => setSearch(!search)}
+              onClick={() => {
+                if (search || ensureSearchKey()) {
+                  setSearch(!search)
+                }
+              }}
             >
               <IconGlobeLanguageOutline14 />
               <span className={styles.toggleLabel}>{t('search')}</span>
@@ -256,20 +298,23 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
           </Tooltip> : null}
         </div>}
         <div className={styles.right}>
-          {!compact && (deepseekTools || voice.status !== 'idle') ? <VoiceButton
+          {!compact ? <VoiceButton
             status={voice.status}
             disabled={!voice.available}
             seconds={voice.seconds}
             onClick={() => {
-              if (
-                voice.status !== 'idle' ||
-                (!useChatStore.getState().importingHistory && ensureApiKey())
-              ) {
-                void voice.toggle()
+              if (voice.status === 'idle') {
+                if (useChatStore.getState().importingHistory) { return }
+                if (!getProviderKey(useSettings.getState(), 'deepseek')) {
+                  showToast({ key: 'voiceInputMissingKey', type: 'error' })
+                  openSettings('data')
+                  return
+                }
               }
+              void voice.toggle()
             }}
           /> : null}
-          {deepseekTools && !compact ? <IconButton
+          {attachmentsAvailable && !compact ? <IconButton
             size="m"
             tone="primary"
             icon={<IconPaperclipOutline16 />}
@@ -282,7 +327,7 @@ const Input = ({ sessionId, compact }: { sessionId: string | null; compact: bool
             type="file"
             multiple
             hidden
-            accept={ACCEPT}
+            accept={deepseekTools ? ACCEPT : localAttachmentAccept(model)}
             onChange={(event) => {
               acceptFiles(Array.from(event.target.files ?? []))
               event.target.value = ''

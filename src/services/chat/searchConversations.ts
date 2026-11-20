@@ -43,9 +43,10 @@ export const searchConversations = async (
   for (const summary of sessions) {
     signal.throwIfAborted()
     const cache = useChatStore.getState().sessionCache
-    const session = Object.hasOwn(cache, summary.id)
-      ? cache[summary.id]
-      : await loadSession(summary.id)
+    const cached = Object.hasOwn(cache, summary.id) ? cache[summary.id] : undefined
+    const session = cached?.folderId === summary.folderId
+      ? cached
+      : await loadSession(summary.folderId, summary.id)
     const messages = session ? getVisibleMessages(session) : []
     let snippet
     for (let index = messages.length - 1; index >= 0; index--) {

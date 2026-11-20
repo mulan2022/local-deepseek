@@ -36,6 +36,25 @@ export const getVisibleMessages = (session: Session): Message[] => {
 
 export type MessageVersions = { ids: string[]; index: number }
 
+/** Reveal the exact saved reply even when an ancestor has since been edited or regenerated. */
+export const revealMessage = (original: Session, messageId: string): Session | null => {
+  const session = normalizeSession(original)
+  const byId = new Map(session.messages.map(message => [message.id, message]))
+  const path: Message[] = []
+  let message = byId.get(messageId)
+  while (message) {
+    path.push(message)
+    byId.delete(message.id)
+    if (message.parentId === null) { break }
+    message = byId.get(message.parentId ?? '')
+  }
+  const root = path.at(-1)
+  if (!root || root.parentId !== null) { return null }
+  const next = new Map(path.slice(1).map((parent, index) => [parent.id, path[index].id]))
+  return { ...session, rootMessageId: root.id,
+    messages: session.messages.map(item => next.has(item.id) ? { ...item, selectedChildId: next.get(item.id) } : item) }
+}
+
 /** 一次遍历收集兄弟版本；版本列表未变化时复用旧对象与索引，避免流式正文更新重绘历史消息。 */
 export const buildMessageVersions = (
   session: Session,

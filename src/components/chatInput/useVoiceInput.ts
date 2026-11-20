@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranslationMessage } from '../../i18n/index.js'
 import { transcribe } from '../../services/api/speech.js'
 import { startRecording, type Recording } from '../../services/speech/recorder.js'
-import { useSettings } from '../../services/settings.js'
+import { getProviderKey, useSettings } from '../../services/settings.js'
 import { showToast } from '../base/toastState.js'
 
-export type VoiceInputStatus = 'idle' | 'recording' | 'transcribing'
+export type VoiceInputStatus = 'idle' | 'starting' | 'recording' | 'transcribing'
 
 /**
  * 录音依赖 getUserMedia，只在安全上下文可用（HTTPS、localhost、file://）。
@@ -22,7 +22,7 @@ const describeRecordingError = (error: unknown): TranslationMessage => {
       return { key: 'voiceInputNoDevice' }
     }
   }
-  return { key: 'voiceInputFailed' }
+  return { key: 'voiceInputRecordingFailed' }
 }
 
 /**
@@ -33,15 +33,21 @@ export const useVoiceInput = (onText: (text: string) => void) => {
   const [status, setStatus] = useState<VoiceInputStatus>('idle')
   /** 本次录音已录秒数，只在录音中递增 */
   const [seconds, setSeconds] = useState(0)
-  const recordingRef = useRef<Recording | null>(null)
+  const recordingRef = useRef<{ recording: Recording; key: string } | null>(null)
   const controllerRef = useRef<AbortController | null>(null)
   const operationRef = useRef(0)
+  const statusRef = useRef<VoiceInputStatus>('idle')
   const onTextRef = useRef(onText)
   onTextRef.current = onText
 
+  const updateStatus = useCallback((next: VoiceInputStatus) => {
+    statusRef.current = next
+    setStatus(next)
+  }, [])
+
   const cancelOperation = useCallback(() => {
     operationRef.current++
-    recordingRef.current?.cancel()
+    recordingRef.current?.recording.cancel()
     recordingRef.current = null
     controllerRef.current?.abort()
     controllerRef.current = null
@@ -49,18 +55,19 @@ export const useVoiceInput = (onText: (text: string) => void) => {
 
   const cancel = useCallback(() => {
     cancelOperation()
-    setStatus('idle')
-  }, [cancelOperation])
+    updateStatus('idle')
+  }, [cancelOperation, updateStatus])
 
   const finish = useCallback(async () => {
-    const recording = recordingRef.current
-    if (!recording) {
-      // 仍在等待麦克风授权时也允许取消；迟到的录音对象会立即释放。
-      cancel()
+    const current = recordingRef.current
+    if (!current) {
+      if (statusRef.current === 'starting') { cancel() }
       return
     }
+    const { recording, key } = current
     const operation = operationRef.current
     recordingRef.current = null
+    updateStatus('transcribing')
     let controller: AbortController | null = null
     try {
       let audio: Blob | null
@@ -69,13 +76,16 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       } finally {
         recording.cancel()
       }
-      if (operationRef.current !== operation || !audio) {
+      if (operationRef.current !== operation) {
+        return
+      }
+      if (!audio) {
+        showToast({ key: 'voiceInputEmpty' })
         return
       }
       controller = new AbortController()
       controllerRef.current = controller
-      setStatus('transcribing')
-      const text = await transcribe(useSettings.getState().apiKey ?? '', audio, controller.signal)
+      const text = await transcribe(key, audio, controller.signal)
       if (controller.signal.aborted || operationRef.current !== operation) {
         return
       }
@@ -91,25 +101,17 @@ export const useVoiceInput = (onText: (text: string) => void) => {
     } finally {
       if (operationRef.current === operation) {
         controllerRef.current = null
-        setStatus('idle')
+        updateStatus('idle')
       }
     }
-  }, [cancel])
+  }, [cancel, updateStatus])
 
-  const toggle = useCallback(async () => {
-    if (!AVAILABLE) {
-      return
-    }
-    if (status === 'recording') {
-      await finish()
-      return
-    }
-    if (status === 'transcribing') {
-      cancel()
-      return
-    }
+  const start = useCallback(async () => {
+    if (!AVAILABLE || statusRef.current !== 'idle') { return false }
+    const key = getProviderKey(useSettings.getState(), 'deepseek')
+    if (!key) { return false }
     const operation = ++operationRef.current
-    setStatus('recording')
+    updateStatus('starting')
     try {
       const recording = await startRecording(() => {
         if (operationRef.current === operation) {
@@ -119,16 +121,29 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       })
       if (operationRef.current !== operation) {
         recording.cancel()
-        return
+        return false
       }
-      recordingRef.current = recording
+      recordingRef.current = { recording, key }
+      updateStatus('recording')
+      return true
     } catch (error) {
       if (operationRef.current === operation) {
-        setStatus('idle')
+        updateStatus('idle')
         showToast(describeRecordingError(error))
       }
+      return false
     }
-  }, [status, finish, cancel])
+  }, [finish, updateStatus])
+
+  const toggle = useCallback(() => {
+    if (statusRef.current === 'idle') {
+      void start()
+    } else if (statusRef.current === 'recording') {
+      void finish()
+    } else {
+      cancel()
+    }
+  }, [start, finish, cancel])
 
   useEffect(() => {
     if (status !== 'recording') {
@@ -146,7 +161,7 @@ export const useVoiceInput = (onText: (text: string) => void) => {
   useEffect(() => cancelOperation, [cancelOperation])
 
   /** 当前录音的频谱分析节点，未录音时为 null */
-  const getAnalyser = useCallback(() => recordingRef.current?.analyser ?? null, [])
+  const getAnalyser = useCallback(() => recordingRef.current?.recording.analyser ?? null, [])
 
   return { status, seconds, getAnalyser, toggle, cancel, available: AVAILABLE }
 }

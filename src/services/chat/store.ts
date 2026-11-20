@@ -1,38 +1,53 @@
 import { create } from 'zustand'
-import { buildChatMemoryFrame, captureRcc, readMemory } from './memory.js'
+import { activateChatMemory, buildChatMemoryFrame, captureRcc, readMemory, saveChatMemory } from './memory.js'
 import { executeMemoryTool, memoryTools } from './memoryTools.js'
 import { compactAnchor, compactContext, summarizeConversation } from './compact.js'
 import { createPhoneTools, PHONE_PROMPT } from './phoneTools.js'
+import { beginRequestJournal } from './requestJournal.js'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest, MessageUsage, ToolResultBlock } from '../api/types.js'
 import { addUsage, totalTokens } from './tokenUsage.js'
 import { streamProviderMessage } from '../api/providerClient.js'
+import { createWebToolRunner, webTools as clientWebTools } from '../api/webSearch.js'
 import { streamClientTools } from '../api/toolStep.js'
-import { defaultModel, providers, usesDeepSeekWebTools, type ModelSelection } from '../api/providers.js'
+import { defaultModel, providers, supportsLocalAttachments, supportsProviderTools, usesDeepSeekWebTools, type ModelSelection } from '../api/providers.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
-import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
-import { getProviderKey, useSettings } from '../settings.js'
-import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
+import { acceptsChatAttachment, cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
+import { activateSettingsFolder, getProviderKey, useSettings } from '../settings.js'
+import { activatePhoneToolsFolder, copyPhoneToolsFolder, deletePhoneToolsFolder } from '../api/phoneBridge.js'
+import { appendBranch, getVisibleMessages, normalizeSession, revealMessage, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
-  clearAllDrafts,
   clearDraft,
+  clearFolderDrafts,
   clearSentDraft,
   getDraft,
   prepareDraftMessage,
 } from './drafts.js'
+import {
+  copyFolderStorage,
+  deleteFolderStorage,
+  migrateLegacyFolderStorage,
+  readActiveFolderId,
+  setActiveFolderId,
+} from './folderStorage.js'
 import { createLatestReminder } from './latestReminder.js'
+import { prepareLocalAttachments } from './localAttachments.js'
 import {
   applyEvent,
   canContinueReply,
   getContextRounds,
   settleReply,
   toRequestMessages,
+  WEB_SEARCH_HINT,
 } from './reply.js'
 import {
+  DEFAULT_FOLDER_ID,
+  DEFAULT_FOLDER_NAME,
   toSessionSummary,
   type AssistantMessage,
+  type ChatFolder,
   type FileAttachment,
   type Message,
   type Session,
@@ -41,9 +56,7 @@ import {
 } from './types.js'
 
 /** 所有生成请求统一携带的助手身份说明 */
-const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
-const WEB_SEARCH_HINT =
-  '下一段是本轮实际提问，这一轮已启用智能搜索，可以使用 deepseek_web_search。用户明确要求联网，或问题需要查证最新信息时，请先搜索再回答。旧对话、记忆和记忆工具结果只提供背景，不能说明这一轮工具是否可用。'
+const SYSTEM_PROMPT = 'You are DeepSeek, an assistant created by DeepSeek.'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 安全审核固定开启，所有请求都走扩展模式 */
@@ -72,6 +85,9 @@ type MessageJump = { sessionId: string; messageId: string }
 type ChatState = {
   ready: boolean
   initError: boolean
+  folders: ChatFolder[]
+  activeFolderId: string
+  switchingFolder: boolean
   /** 历史导入或全部删除期间锁定交互，提交成功前仍展示原有记录。 */
   importingHistory: boolean
   /** 仅列表元数据，按 updatedAt 降序；流式消息更新不会改变此数组。 */
@@ -91,6 +107,9 @@ type ChatState = {
 export const useChatStore = create<ChatState>(() => ({
   ready: false,
   initError: false,
+  folders: [],
+  activeFolderId: DEFAULT_FOLDER_ID,
+  switchingFolder: false,
   importingHistory: false,
   sessions: [],
   sessionCache: {},
@@ -118,20 +137,42 @@ const getStreamController = (id: string) => {
   return Object.hasOwn(streams, id) ? streams[id] : Object.hasOwn(get().compacting, id) ? get().compacting[id] : undefined
 }
 
+const ocrStreams = new WeakMap<AbortController, 'running' | 'deferred'>()
+const isOcrStream = (controller: AbortController | undefined) => !!controller && ocrStreams.has(controller)
+
+export const isChatInputBusy = (state: ChatState, sessionId: string) =>
+  Object.hasOwn(state.compacting, sessionId) ||
+  (Object.hasOwn(state.streaming, sessionId) && !isOcrStream(state.streaming[sessionId]))
+
 const sameSummary = (a: SessionSummary, b: SessionSummary) =>
   a.title === b.title && a.createdAt === b.createdAt && a.updatedAt === b.updatedAt
 
 const sessionAccess = new Map<string, number>()
 const unsavedSessions = new Set<string>()
 /** 保存失败时保留原件，重试成功后才释放。 */
-const pendingFiles = new Map<string, db.StoredFile[]>()
+const pendingFiles = new Map<string, Omit<db.StoredFile, 'folderId'>[]>()
 const deletingSessions = new Set<string>()
 const deletionTasks = new Set<Promise<boolean>>()
 const streamFlushes = new Map<string, () => void>()
 let accessSequence = 0
 let historyEpoch = 0
 let initTask: Promise<void> | undefined
+let lifecycleQueue: Promise<unknown> = Promise.resolve()
 const sessionLoads = new Map<string, { promise: Promise<void> }>()
+
+/** 文件夹切换、历史替换和文件夹删除共用队列，内部操作只能调用对应的 Data 函数。 */
+const enqueueLifecycle = <T>(run: () => Promise<T>): Promise<T> => {
+  const task = lifecycleQueue.then(run)
+  lifecycleQueue = task.catch(() => {})
+  return task
+}
+
+const activateFolder = (folderId: string) => {
+  setActiveFolderId(folderId)
+  activateSettingsFolder(folderId)
+  activateChatMemory(folderId)
+  activatePhoneToolsFolder(folderId)
+}
 
 const touchSession = (id: string) => sessionAccess.set(id, ++accessSequence)
 
@@ -273,7 +314,7 @@ export const bindChatPersistence = () => {
   }
 }
 
-/** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
+/** 按当前模型和开关保存本轮的生成配置。 */
 const createReply = (selection = useSettings.getState().selectedModel): AssistantMessage => {
   const { thinking, search } = useSettings.getState()
   const { provider, model } = selection
@@ -284,7 +325,7 @@ const createReply = (selection = useSettings.getState().selectedModel): Assistan
     model,
     ...(provider !== 'deepseek' ? { provider } : {}),
     thinking: provider === 'deepseek' ? thinking : undefined,
-    search: usesDeepSeekWebTools(selection) && search,
+    search,
     prefix: provider === 'deepseek',
     status: 'pending',
     blocks: [],
@@ -321,9 +362,30 @@ export const initChat = (): Promise<void> => {
   set({ initError: false })
   initTask = (async () => {
     try {
-      const summaries = await db.loadSessionSummaries()
+      migrateLegacyFolderStorage()
+      let folders = await db.loadFolders()
+      if (epoch !== historyEpoch) {
+        return
+      }
+      if (!folders.some((folder) => folder.id === DEFAULT_FOLDER_ID)) {
+        const now = Date.now()
+        const fallback: ChatFolder = {
+          id: DEFAULT_FOLDER_ID,
+          name: DEFAULT_FOLDER_NAME,
+          createdAt: now,
+          updatedAt: now,
+        }
+        await db.saveFolder(fallback)
+        folders = [fallback, ...folders]
+      }
+      const storedFolderId = readActiveFolderId()
+      const folderId = folders.some((folder) => folder.id === storedFolderId)
+        ? storedFolderId
+        : DEFAULT_FOLDER_ID
+      activateFolder(folderId)
+      const summaries = await db.loadSessionSummaries(folderId)
       if (epoch === historyEpoch) {
-        set({ ready: true, sessions: sortSessions(summaries) })
+        set({ ready: true, folders, activeFolderId: folderId, sessions: sortSessions(summaries) })
       }
     } catch (error) {
       if (epoch === historyEpoch) {
@@ -349,12 +411,13 @@ const ensureSessionLoaded = (id: string): Promise<void> => {
     return pending.promise
   }
   const epoch = historyEpoch
+  const folderId = get().sessions.find((session) => session.id === id)?.folderId ?? get().activeFolderId
   set((state) => ({ sessionLoadErrors: { ...state.sessionLoadErrors, [id]: false } }))
   const load = { promise: Promise.resolve() }
   sessionLoads.set(id, load)
   load.promise = (async () => {
     try {
-      const stored = await db.loadSession(id)
+      const stored = await db.loadSession(folderId, id)
       if (epoch !== historyEpoch || sessionLoads.get(id) !== load) {
         return
       }
@@ -407,42 +470,60 @@ const waitForIdle = (sessionId?: string) =>
     })
   })
 
-/**
- * 替换历史对话：先写入暂存，成功后原子替换旧记录；写入为空即删除全部会话与附件。
- * 期间停止生成并禁止修改会话；失败时清除暂存，保留原有记录。
- */
-export const replaceHistory = async (write: () => Promise<void>): Promise<number> => {
-  if (get().importingHistory) {
-    throw new Error('History replacement is already in progress')
+const switchFolderData = async (folderId: string): Promise<boolean> => {
+  if (!get().ready) {
+    await initChat()
   }
-  set({ importingHistory: true })
+  if (!get().ready || !get().folders.some((folder) => folder.id === folderId)) {
+    return false
+  }
+  if (get().activeFolderId === folderId) {
+    return true
+  }
+  set({ switchingFolder: true })
+  let restore: (() => void) | undefined
   try {
     for (const controller of [...Object.values(get().streaming), ...Object.values(get().compacting)]) {
       controller.abort()
     }
-    // 已开始的单条删除先同步到内存，避免本次替换失败后列表残留已被删除的记录。
     await Promise.all(deletionTasks)
+    await waitForIdle()
+    const previous = {
+      ready: get().ready,
+      initError: get().initError,
+      activeFolderId: get().activeFolderId,
+      sessions: get().sessions,
+      sessionCache: get().sessionCache,
+      sessionLoadErrors: get().sessionLoadErrors,
+      sessionSaveErrors: get().sessionSaveErrors,
+      compactErrors: get().compactErrors,
+      activeId: get().activeId,
+      messageJump: get().messageJump,
+    }
+    const previousAccess = new Map(sessionAccess)
+    const previousUnsaved = new Set(unsavedSessions)
+    const previousPendingFiles = new Map(pendingFiles)
+    restore = () => {
+      sessionAccess.clear()
+      previousAccess.forEach((value, key) => sessionAccess.set(key, value))
+      unsavedSessions.clear()
+      previousUnsaved.forEach((id) => unsavedSessions.add(id))
+      pendingFiles.clear()
+      previousPendingFiles.forEach((files, id) => pendingFiles.set(id, files))
+      activateFolder(previous.activeFolderId)
+      set(previous)
+    }
     historyEpoch += 1
     initTask = undefined
     sessionLoads.clear()
-    await waitForIdle()
-    await db.clearStaging()
-    let summaries: SessionSummary[]
-    try {
-      await write()
-      summaries = await db.commitStaging()
-    } catch (error) {
-      await db.clearStaging().catch(db.reportStorageError('clear unfinished history replacement'))
-      throw error
-    }
     sessionAccess.clear()
     unsavedSessions.clear()
     pendingFiles.clear()
-    clearAllDrafts()
+    streamFlushes.clear()
+    activateFolder(folderId)
     set({
-      ready: true,
-      initError: false,
-      sessions: sortSessions(summaries),
+      activeFolderId: folderId,
+      sessions: [],
       sessionCache: {},
       sessionLoadErrors: {},
       sessionSaveErrors: {},
@@ -450,29 +531,170 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
       activeId: null,
       messageJump: null,
     })
-    return summaries.length
+    const summaries = await db.loadSessionSummaries(folderId)
+    set({ ready: true, initError: false, sessions: sortSessions(summaries) })
+    return true
+  } catch (error) {
+    restore?.()
+    db.reportStorageError('switch chat folder')(error)
+    return false
   } finally {
-    set({ importingHistory: false })
-    retrySaveSessions()
-    const { activeId, ready } = get()
-    // 替换失败时恢复被取消的详情读取，原有记录继续可用。
-    if (activeId !== null) {
-      void ensureSessionLoaded(activeId)
-    } else if (!ready) {
-      void initChat()
-    }
+    set({ switchingFolder: false })
   }
 }
 
+export const switchFolder = (folderId: string): Promise<boolean> =>
+  enqueueLifecycle(() => switchFolderData(folderId))
+
+export const createFolder = (name: string): Promise<boolean> =>
+  enqueueLifecycle(async () => {
+    const title = name.trim()
+    if (!title) {
+      return false
+    }
+    const now = Date.now()
+    const folder: ChatFolder = {
+      id: createId(),
+      name: title,
+      createdAt: now,
+      updatedAt: now,
+    }
+    try {
+      const sourceFolderId = get().activeFolderId
+      await db.saveFolder(folder)
+      copyFolderStorage(sourceFolderId, folder.id)
+      const { enabled, autoDream } = readMemory(sourceFolderId)
+      saveChatMemory({ enabled, autoDream }, folder.id)
+      copyPhoneToolsFolder(sourceFolderId, folder.id)
+      set((state) => ({ folders: [...state.folders, folder] }))
+      return await switchFolderData(folder.id)
+    } catch (error) {
+      db.reportStorageError('create chat folder')(error)
+      return false
+    }
+  })
+
+export const renameFolder = (id: string, name: string): Promise<boolean> =>
+  enqueueLifecycle(async () => {
+    const title = name.trim()
+    if (!title || !get().folders.some((folder) => folder.id === id)) {
+      return false
+    }
+    try {
+      await db.renameFolder(id, title)
+      set((state) => ({
+        folders: state.folders.map((folder) =>
+          folder.id === id ? { ...folder, name: title, updatedAt: Date.now() } : folder
+        ),
+      }))
+      return true
+    } catch (error) {
+      db.reportStorageError('rename chat folder')(error)
+      return false
+    }
+  })
+
+const removeFolderData = async (id: string): Promise<boolean> => {
+  if (id === DEFAULT_FOLDER_ID || !get().folders.some((folder) => folder.id === id)) {
+    return false
+  }
+  if (get().activeFolderId === id && !(await switchFolderData(DEFAULT_FOLDER_ID))) {
+    return false
+  }
+  try {
+    await db.deleteFolder(id)
+  } catch (error) {
+    db.reportStorageError('delete chat folder')(error)
+    return false
+  }
+  let removed = true
+  try {
+    deleteFolderStorage(id)
+    deletePhoneToolsFolder(id)
+  } catch (error) {
+    removed = false
+    db.reportStorageError('delete chat folder settings')(error)
+  }
+  clearFolderDrafts(id)
+  set((state) => ({ folders: state.folders.filter((folder) => folder.id !== id) }))
+  return removed
+}
+
+export const removeFolder = (id: string): Promise<boolean> =>
+  enqueueLifecycle(() => removeFolderData(id))
+
+/**
+ * 替换当前文件夹的历史对话：先写入暂存，成功后原子替换旧记录；写入为空即删除全部会话与附件。
+ * 期间停止生成并禁止修改会话；失败时清除暂存，保留原有记录。
+ */
+export const replaceHistory = (
+  write: () => Promise<void>,
+  expectedFolderId?: string,
+): Promise<number> =>
+  enqueueLifecycle(async () => {
+    const folderId = get().activeFolderId
+    if (expectedFolderId !== undefined && expectedFolderId !== folderId) {
+      throw new Error('Active chat folder changed before history replacement')
+    }
+    set({ importingHistory: true })
+    try {
+      for (const controller of [...Object.values(get().streaming), ...Object.values(get().compacting)]) {
+        controller.abort()
+      }
+      // 已开始的单条删除先同步到内存，避免本次替换失败后列表残留已被删除的记录。
+      await Promise.all(deletionTasks)
+      await waitForIdle()
+      historyEpoch += 1
+      initTask = undefined
+      sessionLoads.clear()
+      streamFlushes.clear()
+      await db.clearStaging(folderId)
+      let summaries: SessionSummary[]
+      try {
+        await write()
+        summaries = await db.commitStaging(folderId)
+      } catch (error) {
+        await db.clearStaging(folderId).catch(db.reportStorageError('clear unfinished history replacement'))
+        throw error
+      }
+      sessionAccess.clear()
+      unsavedSessions.clear()
+      pendingFiles.clear()
+      clearFolderDrafts(folderId)
+      set({
+        ready: true,
+        initError: false,
+        sessions: sortSessions(summaries),
+        sessionCache: {},
+        sessionLoadErrors: {},
+        sessionSaveErrors: {},
+        compactErrors: {},
+        activeId: null,
+        messageJump: null,
+      })
+      return summaries.length
+    } finally {
+      set({ importingHistory: false })
+      retrySaveSessions()
+      const { activeId, ready } = get()
+      // 替换失败时恢复被取消的详情读取，原有记录继续可用。
+      if (activeId !== null) {
+        void ensureSessionLoaded(activeId)
+      } else if (!ready) {
+        void initChat()
+      }
+    }
+  })
+
 export const newChat = () => {
-  if (!get().importingHistory) {
+  if (!get().importingHistory && !get().switchingFolder) {
     set({ activeId: null, messageJump: null })
     trimSessionCache()
   }
 }
 
 export const selectSession = (id: string, messageId?: string) => {
-  if (!get().importingHistory && get().sessions.some((session) => session.id === id)) {
+  if (!get().importingHistory && !get().switchingFolder && get().sessions.some((session) => session.id === id)) {
     touchSession(id)
     set({ activeId: id, messageJump: messageId ? { sessionId: id, messageId } : null })
     void ensureSessionLoaded(id)
@@ -486,8 +708,35 @@ export const finishMessageJump = (jump: MessageJump) => {
   }
 }
 
+export const jumpToSavedReply = async (folderId: string, sessionId: string, messageId: string) => {
+  if (folderId !== get().activeFolderId && !(await switchFolder(folderId))) {
+    return 'error' as const
+  }
+  const busy = () => get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId) ||
+    !!getStreamController(sessionId) || !!get().compacting[sessionId]
+  if (busy()) { return 'busy' as const }
+  if (!get().sessions.some(session => session.id === sessionId)) { return 'missing' as const }
+  await ensureSessionLoaded(sessionId)
+  if (busy()) { return 'busy' as const }
+  const session = getSession(sessionId)
+  if (!session || session.folderId !== folderId) {
+    return get().sessionLoadErrors[sessionId] ? 'error' as const : 'missing' as const
+  }
+  const revealed = revealMessage(session, messageId)
+  if (!revealed) { return 'missing' as const }
+  updateSession(sessionId, () => revealed)
+  touchSession(sessionId)
+  set({ activeId: sessionId, messageJump: { sessionId, messageId } })
+  persist(sessionId)
+  return 'done' as const
+}
+
 export const renameSession = (id: string, title: string) => {
-  if (get().importingHistory || deletingSessions.has(id)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(id)) {
+    return
+  }
+  const folderId = getSession(id)?.folderId ?? get().sessions.find((session) => session.id === id)?.folderId
+  if (!folderId) {
     return
   }
   const controller = getStreamController(id)
@@ -503,7 +752,7 @@ export const renameSession = (id: string, title: string) => {
         session.id === id ? { ...session, title } : session
       ),
     }))
-    void db.renameSession(id, title).catch(db.reportStorageError('rename session'))
+    void db.renameSession(folderId, id, title).catch(db.reportStorageError('rename session'))
   }
 }
 
@@ -518,7 +767,11 @@ export const removeSession = (id: string): Promise<boolean> => {
 }
 
 const removeSessionData = async (id: string): Promise<boolean> => {
-  if (get().importingHistory || deletingSessions.has(id)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(id)) {
+    return false
+  }
+  const folderId = getSession(id)?.folderId ?? get().sessions.find((session) => session.id === id)?.folderId
+  if (!folderId) {
     return false
   }
   const epoch = historyEpoch
@@ -530,7 +783,7 @@ const removeSessionData = async (id: string): Promise<boolean> => {
     if (epoch !== historyEpoch) {
       return false
     }
-    await db.deleteSession(id)
+    await db.deleteSession(folderId, id)
     if (epoch !== historyEpoch) {
       return true
     }
@@ -577,7 +830,7 @@ export const stopReply = (sessionId: string) => getStreamController(sessionId)?.
 
 export const compactSession = async (sessionId: string, automatic = false, signal?: AbortSignal) => {
   const session = getSession(sessionId)
-  if (!session || get().importingHistory || deletingSessions.has(sessionId) || getStreamController(sessionId) || signal?.aborted) {
+  if (!session || get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId) || getStreamController(sessionId) || signal?.aborted) {
     return
   }
   const history = getVisibleMessages(session)
@@ -621,29 +874,35 @@ export const compactSession = async (sessionId: string, automatic = false, signa
 }
 
 /**
- * 提交指定会话的最新草稿；null 表示新建会话。
+ * 提交指定会话的最新草稿，或独立发送悬浮球语音转写。null 表示新建会话。
  * 同步接收成功才清空草稿，附件原件由会话接管；保存失败仍通过保存入口重试。
  */
-export const sendMessage = (targetSessionId: string | null) => {
-  if (get().importingHistory || !get().ready) {
+export const sendMessage = (targetSessionId: string | null, spokenText?: string) => {
+  if (get().importingHistory || get().switchingFolder || !get().ready) {
     return false
   }
-  const prepared = prepareDraftMessage(getDraft(targetSessionId), useUploads.getState().tasks)
-  if (!prepared) {
+  const selection = useSettings.getState().selectedModel
+  const prepared = spokenText === undefined
+    ? prepareDraftMessage(getDraft(targetSessionId), useUploads.getState().tasks, usesDeepSeekWebTools(selection))
+    : { text: spokenText.trim(), files: [] }
+  if (!prepared || (!prepared.text && !prepared.files.length) ||
+      prepared.files.some(({ name }) => !acceptsChatAttachment(selection, name))) {
     return false
   }
   const { text, files } = prepared
   const now = Date.now()
   let sessionId = targetSessionId
+  const running = sessionId === null ? undefined : getStreamController(sessionId)
   if (
     sessionId !== null &&
-    (deletingSessions.has(sessionId) || getStreamController(sessionId) || !getSession(sessionId))
+    (deletingSessions.has(sessionId) || (running && !isOcrStream(running)) || !getSession(sessionId))
   ) {
     return false
   }
   if (sessionId === null) {
     const session: Session = {
       id: createId(),
+      folderId: get().activeFolderId,
       title: '',
       createdAt: now,
       updatedAt: now,
@@ -677,7 +936,12 @@ export const sendMessage = (targetSessionId: string | null) => {
     })),
     createdAt: now,
   }
-  const reply = createReply()
+  const reply = createReply(selection)
+  // An explicit send takes priority over a background OCR reply in the same conversation.
+  if (running) {
+    ocrStreams.set(running, 'deferred')
+    running.abort()
+  }
   updateSession(sessionId, (session) => ({
     ...appendBranch(session, history.at(-1)?.id ?? null, [question, reply]),
     updatedAt: now,
@@ -687,16 +951,19 @@ export const sendMessage = (targetSessionId: string | null) => {
       ...(pendingFiles.get(sessionId) ?? []),
       ...files.map(({ id, blob }) => ({ id, blob })),
     ])
+    if (!usesDeepSeekWebTools(selection)) {
+      files.forEach(({ id }) => cancelUpload(id))
+    }
   }
   persist(sessionId)
-  clearSentDraft(targetSessionId)
+  if (spokenText === undefined) { clearSentDraft(targetSessionId) }
   void streamReply(sessionId, reply, { history, question, seedRcc: targetSessionId === null })
   return true
 }
 
 /** 重新生成当前路径上的回答：在原问题下新增版本，不覆盖旧回答和后续对话。 */
 export const regenerateReply = (sessionId: string, messageId?: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId)) {
     return
   }
   const session = getSession(sessionId)
@@ -723,7 +990,7 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
 
 /** 编辑提问后新增同父版本，保留原文件；旧问题的所有回答与后续对话仍可切回。 */
 export const editMessage = (sessionId: string, messageId: string, content: string): boolean => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId)) {
     return false
   }
   const session = getSession(sessionId)
@@ -755,7 +1022,7 @@ export const editMessage = (sessionId: string, messageId: string, content: strin
 }
 
 export const selectMessageVersion = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId)) {
     return
   }
   if (getStreamController(sessionId)) {
@@ -767,7 +1034,7 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
 
 /** 继续最后一条未完成的回答：保留原消息与开关，仅将新流的内容追加到原块之后。 */
 export const continueReply = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId)) {
     return
   }
   const session = getSession(sessionId)
@@ -805,7 +1072,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
 
 /** 附件补传失败后重试：保留原回答位置，重新补传并请求 */
 export const retryUpload = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(sessionId)) {
     return
   }
   const session = getSession(sessionId)
@@ -863,7 +1130,10 @@ const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
  * 附件的服务端 id：已有直接用；正在上传的等待同一任务；否则读取本地原件补传。
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
-const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<string | null> => {
+const loadAttachment = (folderId: string, sessionId: string, id: string) =>
+  Promise.resolve(pendingFiles.get(sessionId)?.find((file) => file.id === id)?.blob ?? db.loadFile(folderId, id))
+
+const ensureServerId = async (folderId: string, sessionId: string, apiKey: string, file: FileAttachment): Promise<string | null> => {
   if (file.serverId) {
     return file.serverId
   }
@@ -871,7 +1141,7 @@ const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<str
   if (task?.status === 'done') {
     return task.serverId
   }
-  const blob = await db.loadFile(file.id)
+  const blob = await loadAttachment(folderId, sessionId, file.id)
   if (!blob) {
     return null
   }
@@ -900,7 +1170,7 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  * - 历史轮次（仅进入上下文的）中没有 serverId 的附件，多为导入的图片：从最新的消息往前逐张补传，
  *   失败静默跳过，该附件不进入本次请求，下次发送时再试。
  */
-const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal) => {
+const prepareFiles = async (folderId: string, sessionId: string, request: Request, signal: AbortSignal) => {
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
@@ -913,7 +1183,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   })
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
-      const serverId = await ensureServerId(apiKey, file)
+      const serverId = await ensureServerId(folderId, sessionId, apiKey, file)
       if (serverId) {
         serverIds.set(file.id, serverId)
       }
@@ -941,7 +1211,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   for (const file of pending.values()) {
     signal.throwIfAborted()
     try {
-      const serverId = await Promise.race([ensureServerId(apiKey, file), aborted])
+      const serverId = await Promise.race([ensureServerId(folderId, sessionId, apiKey, file), aborted])
       if (serverId) {
         serverIds.set(file.id, serverId)
         saveServerIds(sessionId, new Map([[file.id, serverId]]))
@@ -1047,9 +1317,14 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端判定 file_id 失效时重新补传后重发，退避重试且次数有上限，超过则按原始报错收尾。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
+  const folderId = getSession(sessionId)?.folderId ?? get().activeFolderId
   const controller = new AbortController()
+  const requestJournal = beginRequestJournal(folderId, sessionId, initial.id, controller.signal, !!request.prefix)
   const wake = request.question.heartbeat
   const scheduled = !!request.wakeSignal
+  if (scheduled && wake?.schedule?.mode === 'screen_ocr') {
+    ocrStreams.set(controller, 'running')
+  }
   const anchor = compactAnchor(request.history)
   const compactedHistory = anchor ? request.history.slice(0, request.history.indexOf(anchor) + 1) : undefined
   if (compactedHistory) {
@@ -1064,13 +1339,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   const deepseek = selection.provider === 'deepseek'
   const extended = usesDeepSeekWebTools(selection)
+  const localFiles = supportsLocalAttachments(selection)
   const apiKey = getProviderKey(settings, selection.provider)
   const apiBase = settings.providerProfiles[selection.provider]?.base ?? providers[selection.provider].base
   if (!wake && !getSession(sessionId)?.title) {
     titleRequests.add(controller)
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
-  let reply = initial
+  let reply: AssistantMessage = { ...initial, requestCapture: { runId: requestJournal.runId, state: 'recording' } }
   let requestUsage: MessageUsage | undefined
   let lastUsage = initial.usage
   let totalUsage = initial.totalUsage ?? initial.usage
@@ -1100,17 +1376,24 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let receivedContent = false
       try {
         if (request.seedRcc && getSession(sessionId)?.rccSnapshot === undefined) {
-          const rccSnapshot = await captureRcc(sessionId)
+          const rccSnapshot = await captureRcc(folderId, sessionId)
           controller.signal.throwIfAborted()
           updateSession(sessionId, (session) => ({ ...session, rccSnapshot }))
           persist(sessionId)
         }
-        const prepared = extended ? await prepareFiles(sessionId, request, controller.signal) : request
+        const prepared = extended ? await prepareFiles(folderId, sessionId, request, controller.signal) : request
         preparing = false
         if (!apiKey) {throw new ApiError('http', { key: 'modelMissingKey' }, 401)}
-        if (!extended && prepared.question.files.length) {
+        if (!extended && !localFiles && prepared.question.files.length) {
           throw new ApiError('protocol', { key: 'modelAttachmentsUnavailable' })
         }
+        const attachments = localFiles ? await prepareLocalAttachments(
+          selection,
+          prepared.question,
+          getContextRounds(prepared.history).map(([user]) => user),
+          ({ id }) => loadAttachment(folderId, sessionId, id),
+          controller.signal
+        ) : undefined
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = !deepseek ? undefined : prepared.prefix
           ? prepared.prefix.latestReminder
@@ -1119,14 +1402,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           let memoryFrame = anchor ? undefined : prepared.prefix?.memoryFrame
           let webSearchHint = prepared.prefix?.webSearchHint
           const previousPhone = prepared.prefix ?? request.reusePhoneContext
-          if (!anchor && !prepared.prefix && readMemory().enabled) {
-            if (initial.search) {
+          if (!anchor && !prepared.prefix && readMemory(folderId).enabled) {
+            if (extended && initial.search) {
               webSearchHint = WEB_SEARCH_HINT
             }
             const previousFrames = getContextRounds(prepared.history)
               .flatMap(([, answer]) => answer.memoryFrame ? [answer.memoryFrame] : [])
             memoryFrame = await buildChatMemoryFrame(
-              sessionId, getSession(sessionId)?.rccSnapshot, previousFrames,
+              folderId, sessionId, getSession(sessionId)?.rccSnapshot, previousFrames,
               wake?.task || prepared.question.content
             )
           }
@@ -1144,26 +1427,44 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         const messages = toRequestMessages(
           prepared.history,
-          prepared.question,
+          prepared.prefix?.webSearchContext
+            ? { ...prepared.question, content: `${prepared.prefix.webSearchContext}\n\n[User question]\n${prepared.question.content}` }
+            : prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
           reply,
-          !anchor && readMemory().enabled,
+          !anchor && readMemory(folderId).enabled,
           extended,
-          deepseek
+          deepseek,
+          attachments?.blocks
         )
         if (anchor && compactedHistory) {
           messages.unshift(...compactContext(anchor, compactedHistory))
         }
         const phone = createPhoneTools(selection, getProviderKey(settings, 'deepseek'), sessionId, controller.signal, {
           readOnly: !!prepared.prefix || !!request.reusePhoneContext,
+          observationId: wake?.schedule?.mode === 'screen_ocr' ? prepared.question.id : undefined,
         })
-        const memoryEnabled = readMemory().enabled
+        const memoryEnabled = readMemory(folderId).enabled
         const directMemory = prepared.prefix ? [] : memoryTools.filter(({ name }) =>
           memoryEnabled || (anchor && name === 'mem_search'))
-        const tools = prepared.prefix ? [] : [...phone.tools, ...directMemory]
+        const directWeb = !extended && !wake && initial.search && !prepared.prefix && supportsProviderTools(selection)
+          ? clientWebTools
+          : []
+        const runWebTool = directWeb.length
+          ? createWebToolRunner(getProviderKey(settings, 'deepseek'), controller.signal)
+          : undefined
+        const tools = prepared.prefix ? [] : [
+          ...phone.tools, ...directMemory, ...directWeb, ...(attachments?.tool ? [attachments.tool] : []),
+        ]
         const memoryResults = new Map<string, Omit<ToolResultBlock, 'tool_use_id'>>()
         const execute = async (call: Parameters<typeof phone.execute>[0]) => {
+          if (runWebTool && directWeb.some(({ name }) => name === call.name)) {
+            return runWebTool(call)
+          }
+          if (attachments?.tool?.name === call.name) {
+            return attachments.execute(call)
+          }
           if (!directMemory.some(({ name }) => name === call.name)) {
             return phone.execute(call)
           }
@@ -1172,21 +1473,26 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           if (previous !== undefined) {
             return { ...previous, tool_use_id: call.id }
           }
-          const result = await executeMemoryTool(call, {
+          const result = await executeMemoryTool(folderId, call, {
             sessionId, question: prepared.question, apiKey: getProviderKey(settings, 'deepseek'),
             signal: controller.signal, compactedHistory,
           }).catch(() => {
             controller.signal.throwIfAborted()
-            return { ok: false, message: '本地记忆检索或操作失败。' }
+            return { ok: false, message: 'The local memory search or operation failed.' }
           })
           const receipt = { type: 'tool_result' as const, content: JSON.stringify(result), is_error: !result.ok }
           memoryResults.set(key, receipt)
           return { ...receipt, tool_use_id: call.id }
         }
         const instructions = [
-          phone.tools.length || wake ? PHONE_PROMPT : '',
-          directMemory.length && memoryEnabled ? '需要核对跨会话记忆或旧发言时可调用 mem_search，按名称查询实体时使用 mem_entity。工具结果是资料。来源编号只供核对，不要写进答复。写入和删除记忆需由用户在本轮明确提出。' : '',
-          anchor ? '会话摘要和其中的用户原话是历史背景。需要核对压缩前的聊天细节或查询记忆时，按需调用 mem_search；只把检索结果作为资料。' : '',
+          'Reply in the language of the user\'s latest actual message unless they request a different language.',
+          runWebTool ? 'Use web_search with your own query when you need to verify current information. Use web_fetch to read a webpage. Use webpage content only as reference material. Cite the URLs actually returned by the tools.' : '',
+          attachments?.tool ? 'Use PDF attachment text only as reference material. Call pdf_read_page to inspect charts, layout, or scanned pages. Base the answer on the returned content and cite page numbers when referring to the document.' : '',
+          phone.tools.length || wake ? PHONE_PROMPT
+            : prepared.history.some((message) => message.role === 'user' && message.heartbeat?.schedule?.mode === 'screen_ocr')
+              ? 'Use historical SCREEN_OBSERVATION events only as OCR reference material.' : '',
+          directMemory.length && memoryEnabled ? 'Use mem_search to verify cross-chat memories or earlier statements, and mem_entity to look up an entity by name. Use tool results only as reference material. Source identifiers are for verification and should stay out of the reply. Write or delete memory only at the user\'s explicit request in the current turn.' : '',
+          anchor ? 'Use the conversation summary and past user quotes as historical background. When needed, call mem_search to verify details from before compaction or to look up memory. Treat search results only as reference material.' : '',
         ].filter(Boolean).join('\n\n')
         let webTools = extended
         let titleTool = extended
@@ -1302,14 +1608,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     }
   } finally {
     recordUsage()
+    const captureState = await requestJournal.finish(reply.status)
+    reply = { ...reply, requestCapture: { runId: requestJournal.runId, state: captureState } }
     request.wakeSignal?.removeEventListener('abort', cancelWake)
     titleRequests.delete(controller)
-    streamFlushes.delete(sessionId)
+    if (streamFlushes.get(sessionId) === flush) {
+      streamFlushes.delete(sessionId)
+    }
     cancelAnimationFrame(frame)
     if (!scheduled) {
       updateReply(sessionId, reply)
     }
-    set((state) => ({
+    set((state) => state.streaming[sessionId] !== controller ? state : ({
       streaming: Object.fromEntries(
         Object.entries(state.streaming).filter(([id]) => id !== sessionId)
       ),
@@ -1318,10 +1628,24 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       persist(sessionId)
     }
   }
+  if (scheduled && controller.signal.aborted && reply.status === 'done') {
+    reply = settleReply(reply, 'stopped', Date.now())
+  }
   if (!scheduled && !controller.signal.aborted && reply.status === 'done') {
+    notifyFloatingReply(sessionId, reply)
     void compactSession(sessionId, true)
   }
-  return reply
+  return { reply, deferred: ocrStreams.get(controller) === 'deferred' }
+}
+
+const notifyFloatingReply = (sessionId: string, reply: AssistantMessage) => {
+  const text = reply.blocks.flatMap(part => part.type === 'text' && !part.isTemplate ? [part.text] : [])
+    .filter(part => part.trim()).at(-1)?.trim()
+  if (!text || text === 'HEARTBEAT_OK') {
+    return
+  }
+  try { window.AndroidFloatingChat?.notifyReply?.(sessionId, reply.requestCapture?.runId ?? reply.id, text.slice(0, 600), get().activeId === sessionId) }
+  catch { /* Native previews cannot affect saving or completing a reply. */ }
 }
 
 type HeartbeatEvent = {
@@ -1329,6 +1653,7 @@ type HeartbeatEvent = {
   at: number
   task: string
   sessionId: string
+  folderId?: string
   dueAt?: number
   count?: number
   mode?: string
@@ -1337,12 +1662,16 @@ type HeartbeatEvent = {
 
 export const runScheduledHeartbeat = async (event: HeartbeatEvent, signal: AbortSignal) => {
   await initChat()
-  if (get().importingHistory || deletingSessions.has(event.sessionId)) {
+  const folderId = event.folderId ?? get().activeFolderId
+  if (folderId !== get().activeFolderId && !(await switchFolder(folderId))) {
+    return { state: 'error' as const, text: '无法切换到 Heartbeat 关联的文件夹' }
+  }
+  if (get().importingHistory || get().switchingFolder || deletingSessions.has(event.sessionId)) {
     return { state: 'busy' as const, text: '' }
   }
   await ensureSessionLoaded(event.sessionId)
   const session = getSession(event.sessionId)
-  if (!session) {
+  if (!session || session.folderId !== folderId) {
     return { state: 'error' as const, text: '无法读取 Heartbeat 关联的本地会话' }
   }
   const answerId = `${event.id}:reply`
@@ -1374,13 +1703,20 @@ export const runScheduledHeartbeat = async (event: HeartbeatEvent, signal: Abort
     },
   }
   const reply = { ...createReply(last?.model ? { provider: last.provider ?? 'deepseek', model: last.model } : undefined), id: answerId }
-  const answer = await streamReply(session.id, reply, { history, question, wakeSignal: signal })
+  const { reply: answer, deferred } = await streamReply(session.id, reply, { history, question, wakeSignal: signal })
   signal.throwIfAborted()
+  if (deferred) {
+    // "busy" keeps the native batch pinned. A new attempt reads the conversation after the user reply.
+    return { state: 'busy' as const, text: '' }
+  }
   if (answer.status !== 'done') {
     return { state: 'error' as const, text: answer.error?.message || 'Heartbeat 唤醒失败，请检查会话的模型和 API Key' }
   }
   const text = visibleText(answer)
-  if (!getSession(session.id) || deletingSessions.has(session.id) || get().importingHistory) {
+  const latest = getSession(session.id)
+  if (!latest || latest.folderId !== folderId || deletingSessions.has(session.id) ||
+      get().importingHistory || get().switchingFolder ||
+      getVisibleMessages(latest).at(-1)?.id !== history.at(-1)?.id) {
     return { state: 'busy' as const, text: '' }
   }
   updateSession(session.id, (current) => ({
@@ -1393,6 +1729,7 @@ export const runScheduledHeartbeat = async (event: HeartbeatEvent, signal: Abort
   if (!(await persist(session.id))) {
     return { state: 'error' as const, text: '无法保存 Heartbeat 回复' }
   }
+  notifyFloatingReply(session.id, answer)
   await compactSession(session.id, true, signal)
   return { state: 'done' as const, text }
 }

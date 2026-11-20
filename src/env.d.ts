@@ -15,7 +15,7 @@ declare const __API_ORIGIN__: string
 declare const __PROVIDER_DEV_PATHS__: Record<string, string>
 
 interface Window {
-  AndroidFloatingChat?: { active(): boolean; open(): void; focusInput(focused: boolean): void }
+  AndroidFloatingChat?: { active(): boolean; open(): void; focusInput(focused: boolean): void; notifyReply?(sessionId: string, runId: string, text: string, currentChat: boolean): void; voiceState?(runId: string, status: string): void }
 }
 
 /** Prism 语言包通过副作用注册到全局 Prism */

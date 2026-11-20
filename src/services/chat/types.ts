@@ -11,7 +11,7 @@ import type {
 } from '../api/types.js'
 
 /**
- * 消息附件。id 是本地标识（IndexedDB files 表的主键，原件按它存储，所有引用同一 id 的消息共用一份），
+ * 消息附件。id 是本地标识（IndexedDB files 表以 [folderId, id] 为主键，同一文件夹内共用原件），
  * 导入的附件沿用导出产物里的文件 ID；本地没有原件的附件只展示文件名，不进入请求。
  * serverId 是 Files API 返回的 file_id，导入的数据或尚未上传成功的文件为 null，发送前补传。
  */
@@ -86,7 +86,7 @@ export type RccSnapshot = {
 
 export type ChatMemoryFrame = {
   payload: string
-  /** 保存当时实际注入的说明，旧帧仍按旧格式回放。 */
+  /** 旧记录保存过注入说明。回放使用当前模板，保留原有记忆资料。 */
   instructions?: string
   hasGuide?: true
   hasRcc?: true
@@ -104,14 +104,16 @@ export type AssistantMessage = MessageBranch & {
   provider?: ProviderId
   /** 请求时是否开启深度思考 */
   thinking?: boolean
-  /** 请求时是否声明 deepseek_web_search；关闭时仍声明 deepseek_read_url */
+  /** 请求时是否启用联网搜索。 */
   search?: boolean
   /** 本轮请求的系统信息快照；各回答版本独立保存，续写沿用。历史消息中缺省的快照保持为空。 */
   latestReminder?: string
-  /** 本次实际发送的记忆附文，后续轮次按回答版本原样回放。 */
+  /** 本次发送的记忆资料，按回答版本回放。 */
   memoryFrame?: ChatMemoryFrame
-  /** 记忆开启时实际发送的联网说明，续写和历史回放沿用原文。 */
+  /** 记录该轮启用过联网说明，续写和历史回放使用当前模板。 */
   webSearchHint?: string
+  /** 旧版预搜索回复的资料快照，仅供原回复续写。 */
+  webSearchContext?: string
   /** 手机工具执行回执或截图描述；截图字节不会进入历史。 */
   phoneContext?: string
   /** 本轮配置 Heartbeat 的回执，后续请求按原文回放。 */
@@ -127,6 +129,8 @@ export type AssistantMessage = MessageBranch & {
   usage?: MessageUsage
   totalUsage?: MessageUsage
   compact?: { summary: string; createdAt: number }
+  /** Local request recording identity only; never included in model messages. */
+  requestCapture?: { runId: string; state: 'recording' | 'complete' | 'partial' }
   error?: {
     /** upload：发送前补传附件失败，请求没有发出 */
     kind: ApiErrorKind | 'upload'
@@ -140,8 +144,19 @@ export type AssistantMessage = MessageBranch & {
 
 export type Message = UserMessage | AssistantMessage
 
+export const DEFAULT_FOLDER_ID = 'default'
+export const DEFAULT_FOLDER_NAME = '默认文件夹'
+
+export type ChatFolder = {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
 export type Session = {
   id: string
+  folderId: string
   title: string
   createdAt: number
   updatedAt: number
@@ -154,11 +169,12 @@ export type Session = {
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */
-export type SessionSummary = Pick<Session, 'id' | 'title' | 'createdAt' | 'updatedAt'>
+export type SessionSummary = Pick<Session, 'id' | 'folderId' | 'title' | 'createdAt' | 'updatedAt'>
 
 /** 显式提取字段，避免将完整会话的消息带进列表。 */
 export const toSessionSummary = (session: SessionSummary): SessionSummary => ({
   id: session.id,
+  folderId: session.folderId,
   title: session.title,
   createdAt: session.createdAt,
   updatedAt: session.updatedAt,

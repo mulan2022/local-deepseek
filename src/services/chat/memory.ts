@@ -1,8 +1,15 @@
 import { create } from 'zustand'
 import { buildRecentRecall, findRccPatch, loadRecallSessions } from './recall.js'
 import { publicMemoryPayload, splitMemorySources, withoutMemorySources } from './memorySources.js'
-import { CHAT_MEMORY_CONTEXT, CHAT_MEMORY_GUIDE, CHAT_RECALL_CONTEXT } from './memoryPrompts.js'
+import { chatMemoryInstructions, hasChatRecallInstructions } from './memoryPrompts.js'
 import type { ChatMemoryFrame, RccSnapshot } from './types.js'
+import {
+  CHAT_MEMORY_STORAGE_KEY as STORAGE_KEY,
+  getActiveFolderId,
+  readFolderValue,
+  scopedStorageKey,
+  writeFolderValue,
+} from './folderStorage.js'
 
 export const SECTION_KEYS = ['personal', 'work', 'thisMonth', 'earlierMonths', 'taste', 'tips'] as const
 export type MemorySection = (typeof SECTION_KEYS)[number]
@@ -30,7 +37,6 @@ export type ChatMemory = MemoryVault & {
 
 export const PINNED_LIMIT = 4_000
 export const SECTION_LIMIT = 2_000
-const STORAGE_KEY = 'chat-demo:chat-memory'
 const emptySections: MemoryVault['sections'] = {
   personal: '', work: '', thisMonth: '', earlierMonths: '', taste: '', tips: '',
 }
@@ -57,14 +63,14 @@ const cleanStoredMemory = (memory: ChatMemory): ChatMemory => {
   }
 }
 
-export const readMemory = (): ChatMemory => {
+export const readMemory = (folderId = getActiveFolderId()): ChatMemory => {
   const defaults: ChatMemory = {
     enabled: false, autoDream: true, pinned: '', month: monthKey(new Date()), lastDream: 0,
     sections: emptySections, sectionSources: {}, observations: [], entities: [], checkpoints: {}, skippedSessions: [],
     nextDreamSessionIds: null, dreamNeedsSelection: false, log: [],
   }
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? 'null')
+    const stored = JSON.parse(readFolderValue(folderId, STORAGE_KEY) ?? 'null')
     if (!stored || typeof stored !== 'object') {
       return defaults
     }
@@ -80,34 +86,40 @@ export const readMemory = (): ChatMemory => {
   }
 }
 
-export const useChatMemory = create<ChatMemory>(readMemory)
+export const useChatMemory = create<ChatMemory>(() => readMemory())
 
-export const saveChatMemory = (update: Partial<ChatMemory>) => {
-  const next = cleanStoredMemory({ ...readMemory(), ...update })
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  useChatMemory.setState(next)
+export const activateChatMemory = (folderId: string) => {
+  useChatMemory.setState(readMemory(folderId))
+}
+
+export const saveChatMemory = (update: Partial<ChatMemory>, folderId = getActiveFolderId()) => {
+  const next = cleanStoredMemory({ ...readMemory(folderId), ...update })
+  writeFolderValue(folderId, STORAGE_KEY, JSON.stringify(next))
+  if (folderId === getActiveFolderId()) {
+    useChatMemory.setState(next)
+  }
 }
 
 export const syncChatMemory = (event: StorageEvent) => {
-  if (event.key === STORAGE_KEY || event.key === null) {
+  if (event.key === scopedStorageKey(getActiveFolderId(), STORAGE_KEY) || event.key === null) {
     useChatMemory.setState(readMemory())
   }
 }
 
-export const captureRcc = async (sessionId: string): Promise<RccSnapshot | null> => {
-  if (!readMemory().enabled) {
+export const captureRcc = async (folderId: string, sessionId: string): Promise<RccSnapshot | null> => {
+  if (!readMemory(folderId).enabled) {
     return null
   }
   const capturedAt = Date.now()
-  const sessions = await loadRecallSessions(sessionId).catch(() => [])
+  const sessions = await loadRecallSessions(folderId, sessionId).catch(() => [])
   return { capturedAt, recent: buildRecentRecall(sessions) }
 }
 
 export const buildChatMemoryFrame = async (
-  sessionId: string, snapshot: RccSnapshot | null | undefined,
+  folderId: string, sessionId: string, snapshot: RccSnapshot | null | undefined,
   previousFrames: ChatMemoryFrame[], question: string
 ): Promise<ChatMemoryFrame | undefined> => {
-  const { enabled, pinned, sections, entities } = readMemory()
+  const { enabled, pinned, sections, entities } = readMemory(folderId)
   if (!enabled) {
     return
   }
@@ -119,13 +131,13 @@ export const buildChatMemoryFrame = async (
   const seenQuotes = new Set(previousFrames.flatMap(({ relatedQuote }) => relatedQuote ? [relatedQuote] : []))
   const relatedQuote = snapshot && coveredIds.size && question.trim()
     ? findRccPatch(
-        await loadRecallSessions(sessionId, coveredIds.size, coveredIds).catch(() => []),
+        await loadRecallSessions(folderId, sessionId, coveredIds.size, coveredIds).catch(() => []),
         snapshot, question, seenQuotes
       )
     : undefined
   const needsRecallGuide = Boolean(recent || relatedQuote) ||
     (previousFrames.some((frame) => frame.hasRcc || frame.relatedQuote) &&
-      !previousFrames.some((frame) => frame.instructions?.includes(CHAT_RECALL_CONTEXT)))
+      !previousFrames.some((frame) => hasChatRecallInstructions(frame.instructions)))
   const currentVault = pinned || Object.values(sections).some(Boolean) ? { pinned, sections } : null
   const vaultSnapshot = JSON.stringify(withoutMemorySources(currentVault))
   const previousVault = [...previousFrames].reverse().find((frame) => frame.vaultSnapshot !== undefined)
@@ -138,11 +150,7 @@ export const buildChatMemoryFrame = async (
     return
   }
   return {
-    instructions: [
-      ...(needsGuide ? [CHAT_MEMORY_GUIDE] : []),
-      CHAT_MEMORY_CONTEXT,
-      ...(needsRecallGuide ? [CHAT_RECALL_CONTEXT] : []),
-    ].join('\n\n'),
+    instructions: chatMemoryInstructions(needsGuide, needsRecallGuide),
     ...(needsGuide ? { hasGuide: true } : {}),
     payload: JSON.stringify({
       vault: vaultChanged ? withoutMemorySources(currentVault) : undefined,

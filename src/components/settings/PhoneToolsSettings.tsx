@@ -4,6 +4,7 @@ import {
   getPhoneBridge, phoneSettingsChangeEvent, readPhoneTools, savePhoneSchedule, setPhoneFeature, validHeartbeatTime,
   heartbeatSeconds, isHeartbeatDuration, maxHeartbeatSeconds,
   type HeartbeatSchedule, type PhoneFeature,
+  saveOcrSettings, type OcrSettings, type PhoneToolsState,
 } from '../../services/api/phoneBridge.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { Button } from '../base/Button.js'
@@ -67,11 +68,14 @@ export const PhoneToolsSettings = () => {
           </Button>
         </div>
       ) : null}
+      <OcrSettingsPanel state={state} activeId={activeId} sessions={sessions}
+        refresh={() => setState(readPhoneTools())} />
       <label>
         <input type="checkbox" checked={state.capture} onChange={(e) => toggle('capture', e.target.checked)} />
         {' '}{t('phoneScreenCapture')}
       </label>
       {bridge ? <p>{t('phoneScreenDescription')}</p> : null}
+      {bridge && state.capture && state.captureMessage ? <p role="status">{state.captureMessage}</p> : null}
       {bridge && state.capture ? (
         <div className={styles.memoryActions}>
           <Button variant="outlined" size="s" onClick={() => {
@@ -168,5 +172,50 @@ export const PhoneToolsSettings = () => {
       ) : null}
       {feedback ? <p role="status">{feedback}</p> : null}
     </div>
+  )
+}
+
+const OcrSettingsPanel = ({ state, activeId, sessions, refresh }: {
+  state: PhoneToolsState
+  activeId: string | null
+  sessions: { id: string; title: string }[]
+  refresh: () => void
+}) => {
+  const t = useTranslate()
+  const [draft, setDraft] = useState<OcrSettings | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const value: OcrSettings = draft ?? {
+    ocrSessionId: sessions.some(session => session.id === state.ocrSessionId) ? state.ocrSessionId : activeId || sessions[0]?.id || '',
+    ocrIntervalSeconds: state.ocrIntervalSeconds, ocrBatchChars: state.ocrBatchChars,
+    ocrWaitSeconds: state.ocrWaitSeconds, ocrChangePercent: state.ocrChangePercent,
+  }
+  const fields = [
+    ['ocrIntervalSeconds', 'phoneOcrInterval', 1, 60],
+    ['ocrBatchChars', 'phoneOcrChars', 50, 10000],
+    ['ocrWaitSeconds', 'phoneOcrWait', 1, 120],
+    ['ocrChangePercent', 'phoneOcrChange', 5, 100],
+  ] as const
+  const valid = sessions.some(session => session.id === value.ocrSessionId) &&
+    fields.every(([key, , min, max]) => Number.isInteger(value[key]) && value[key] >= min && value[key] <= max)
+  return (
+    <section className={styles.memorySettings}>
+      <strong>{t('phoneOcrParameters')}</strong>
+      <p>{t('phoneOcrQuickHint')}</p>
+      <p>{t('phoneOcrDescription')}</p>
+      {fields.map(([key, label, min, max]) => <label key={key}>
+        {t(label)}{' '}
+        <input type="number" min={min} max={max} step={1} value={Number.isFinite(value[key]) ? value[key] : ''}
+          onChange={event => setDraft({ ...value, [key]: event.target.value === '' ? NaN : Number(event.target.value) })} />
+      </label>)}
+      <Button variant="outlined" size="s" disabled={!valid} onClick={() => {
+        const error = saveOcrSettings(value)
+        setFeedback(error || t('phoneOcrSaved'))
+        if (!error) { setDraft(null); refresh() }
+      }}>{t('phoneOcrSave')}</Button>
+      {feedback ? <p role="status">{feedback}</p> : null}
+      <p>{t('phoneOcrCache', { count: state.ocrFrames, mb: (state.ocrBytes / 1024 / 1024).toFixed(1) })}</p>
+      {state.ocrStatus ? <p role="status">{state.ocrStatus}</p> : null}
+      {!state.capture || !state.captureActive ? <p>{t('phoneOcrNeedsCapture')}</p> : null}
+    </section>
   )
 }

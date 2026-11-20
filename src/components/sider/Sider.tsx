@@ -3,24 +3,29 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import {
   IconDataOutline16, IconPanelLeftOutline16, IconSearchOutline16, IconSettingsOutline16, NewChatIcon,
+  IconStar16,
 } from '../base/icons.js'
 import { setSiderCollapsed } from '../../services/settings.js'
 import { searchConversations, type ConversationMatch } from '../../services/chat/searchConversations.js'
 import { groupSessions } from '../../services/chat/sessionGroups.js'
 import { newChat, removeSession, selectSession, useChatStore } from '../../services/chat/store.js'
 import type { SessionSummary } from '../../services/chat/types.js'
+import { BrandMark } from '../base/BrandMark.js'
 import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
 import { Modal } from '../base/Modal.js'
 import { showToast } from '../base/toastState.js'
 import { openSettings } from '../settings/settingsDialogState.js'
+import { openFavorites, useFavorites } from '../../services/chat/favorites.js'
 import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
 import { SessionItem } from './SessionItem.js'
+import { FolderSwitcher } from './FolderSwitcher.js'
 import styles from './Sider.module.css'
 
 /** 展开的侧边栏：名称与收起按钮、开启新对话、按时间分组的会话列表、底部设置；移动端放在抽屉里，收起按钮关闭抽屉 */
 export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const t = useTranslate()
+  const favoriteCount = useFavorites(state => state.items.length)
   const sessions = useChatStore((state) => state.sessions)
   const activeId = useChatStore((state) => state.activeId)
   const replacingHistory = useChatStore((state) => state.importingHistory)
@@ -82,7 +87,10 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   return (
     <div className={clsx(styles.sider, mobile && styles.mobile)}>
       <div className={styles.top}>
-        <div className={styles.appName}>{t('appName')}</div>
+        <div className={styles.brand}>
+          <BrandMark className={styles.brandMark} />
+          <div className={styles.appName}>{t('appName')}</div>
+        </div>
         <IconButton
           size="m"
           icon={<IconPanelLeftOutline16 />}
@@ -91,6 +99,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
           onClick={() => (mobile ? closeMobileSider() : setSiderCollapsed(true))}
         />
       </div>
+      <FolderSwitcher />
       <button
         type="button"
         className={styles.newChat}
@@ -164,6 +173,13 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         </div>
       </div>
       <div className={styles.bottom}>
+        <button type="button" className={styles.settings} onClick={() => {
+          closeMobileSider()
+          openFavorites()
+        }}>
+          <span className={styles.settingsIcon}><IconStar16 /></span>
+          <span className={styles.settingsLabel}>{t('favorites')}{favoriteCount ? ' · ' + favoriteCount : ''}</span>
+        </button>
         <button type="button" className={styles.settings} onClick={() => {
           closeMobileSider()
           openSettings('memory')

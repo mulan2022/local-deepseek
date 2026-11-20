@@ -1,9 +1,9 @@
 .frame {
   position: absolute;
   inset: 0;
+  z-index: 1;
   display: flex;
   overflow: hidden;
-  background-color: var(--dsw-alias-bg-base);
 }
 
 .main {
@@ -28,7 +28,8 @@
   gap: 12px;
   padding: 12px 16px;
   color: var(--dsw-alias-label-primary);
-  background-color: var(--dsw-alias-bg-base);
+  background-color: var(--glass-fill-strong);
+  border-bottom: 1px solid var(--glass-border);
   font-size: 14px;
 }
 

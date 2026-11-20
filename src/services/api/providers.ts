@@ -22,6 +22,16 @@ export const providers = {
     base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: ['qwen-max', 'qwen-plus', 'qwen-flash'],
   },
+  hunyuan: {
+    name: '腾讯混元 / TokenHub',
+    base: 'https://tokenhub.tencentmaas.com/v1',
+    models: ['hy4-flash', 'hy4', 'hy3', 'hunyuan-role-latest', 'hy-role', 'hy-vision-2.0-instruct'],
+  },
+  grok: {
+    name: 'Grok / xAI',
+    base: 'https://api.x.ai/v1',
+    models: ['grok-4.7', 'grok-4.6', 'grok-4.3'],
+  },
   custom: { name: '自定义 / OpenAI 兼容', base: '', models: [] },
 } satisfies Record<string, { name: string; base: string; models: string[] }>
 
@@ -37,6 +47,13 @@ export const defaultModel: ModelSelection = { provider: 'deepseek', model: 'deep
 
 export const usesDeepSeekWebTools = ({ provider, model }: ModelSelection) =>
   provider === 'deepseek' && model === 'deepseek-flash'
+
+export const supportsProviderTools = ({ provider, model }: ModelSelection) =>
+  provider !== 'hunyuan' || !/^(?:hy-mt|(?:hy|hunyuan)-role)/i.test(model)
+
+/** For a custom route the caller selects a vision model. Provider aliases can be opaque. */
+export const supportsLocalAttachments = (selection: ModelSelection) =>
+  selection.provider !== 'deepseek' && supportsProviderTools(selection)
 
 /** Official providers allow known hosts; custom relays use an explicit HTTPS base URL. */
 export const validProviderBase = (provider: ProviderId, value: string): string | undefined => {
@@ -56,6 +73,9 @@ export const validProviderBase = (provider: ProviderId, value: string): string |
     return base
   }
   if (provider === 'kimi' && base === 'https://api.moonshot.ai/v1') {
+    return base
+  }
+  if (provider === 'hunyuan' && /^https:\/\/tokenhub(?:-intl)?\.tencentcloudmaas\.com\/v1$/.test(base)) {
     return base
   }
   if (provider === 'glm' && base === 'https://api.z.ai/api/paas/v4') {

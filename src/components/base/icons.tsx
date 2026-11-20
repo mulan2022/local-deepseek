@@ -1,3 +1,10 @@
+export const IconStar16 = ({ filled = false }: { filled?: boolean }) => (
+  <svg width={16} height={16} viewBox="0 0 16 16" fill={filled ? 'currentColor' : 'none'} aria-hidden="true">
+    <path d="m8 1.4 2.02 4.1 4.53.66-3.28 3.19.78 4.51L8 11.73l-4.05 2.13.78-4.51L1.45 6.16l4.53-.66L8 1.4Z"
+      stroke="currentColor" strokeWidth={1.3} strokeLinejoin="round" />
+  </svg>
+)
+
 export const IconCheckOutline16 = () => (
   <svg width={16} height={16} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path

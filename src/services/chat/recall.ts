@@ -21,17 +21,18 @@ type RecallSession = {
 }
 
 export const loadRecallSessions = async (
+  folderId: string,
   currentSessionId?: string,
   limit = SESSION_LIMIT,
   selectedIds?: ReadonlySet<string>,
   includeAssistantReplies = false
 ): Promise<RecallSession[]> => {
-  const summaries = await loadSessionSummaries()
+  const summaries = await loadSessionSummaries(folderId)
   const recent = summaries
     .filter(({ id }) => id !== currentSessionId && (!selectedIds || selectedIds.has(id)))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, limit)
-  const sessions = await Promise.all(recent.map(({ id }) => loadSession(id)))
+  const sessions = await Promise.all(recent.map(({ id }) => loadSession(folderId, id)))
   return sessions.flatMap((session) => {
     if (!session) {
       return []
@@ -65,7 +66,7 @@ export const loadRecallSessions = async (
 
 const clipTurn = (text: string) =>
   text.length > MAX_PATCH_LENGTH
-    ? '[长消息已略]'
+    ? '[Long message omitted]'
     : text.length > 100 ? `${text.slice(0, 60)}[TL;DR]${text.slice(-40)}` : text
 
 export const tokenize = (text: string): string[] =>

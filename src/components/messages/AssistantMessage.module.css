@@ -104,6 +104,10 @@
   opacity: 1;
 }
 
+.favorite {
+  color: var(--dsw-alias-brand-text);
+}
+
 .continueButton {
   margin-left: auto;
 }

@@ -4,10 +4,11 @@ import { readMemory } from './memory.js'
 import { useChatStore } from './store.js'
 
 export const runDreamForCurrentHistory = (apiKey: string, allow = () => true, options: DreamOptions = {}) => {
-  const sessions = useChatStore.getState().sessions
-  return runDream(apiKey, () => {
+  const { activeFolderId, sessions } = useChatStore.getState()
+  return runDream(activeFolderId, apiKey, () => {
     const current = useChatStore.getState()
-    return !current.importingHistory && current.sessions === sessions && allow()
+    return current.activeFolderId === activeFolderId && !current.importingHistory &&
+      current.sessions === sessions && allow()
   }, options)
 }
 
@@ -18,7 +19,7 @@ export const bindDreamScheduler = () => {
       return
     }
     const state = useChatStore.getState()
-    const memory = readMemory()
+    const memory = readMemory(state.activeFolderId)
     const { apiKey } = useSettings.getState()
     const idleSince = Math.max(lastActivity, state.sessions[0]?.updatedAt ?? 0)
     if (state.ready && !state.importingHistory && !Object.keys(state.streaming).length &&
@@ -26,7 +27,7 @@ export const bindDreamScheduler = () => {
       ((!memory.dreamNeedsSelection && memory.log.length > 0) || memory.nextDreamSessionIds?.length) &&
       isDreamDue(Date.now(), memory.lastDream, idleSince)) {
       void runDreamForCurrentHistory(apiKey, () => {
-        const current = readMemory()
+        const current = readMemory(state.activeFolderId)
         return current.enabled && current.autoDream &&
           isDreamDue(Date.now(), current.lastDream, idleSince) &&
           !Object.keys(useChatStore.getState().streaming).length

@@ -19,14 +19,20 @@ import { Welcome } from '../components/session/Welcome.js'
 import { closeSettings, ensureApiKey } from '../components/settings/settingsDialogState.js'
 import { SettingsDialog } from '../components/settings/SettingsDialog.js'
 import { CapturePreview } from '../components/settings/CapturePreview.js'
+import { FavoritesDialog } from '../components/favorites/FavoritesDialog.js'
+import { closeFavorites, initFavorites } from '../services/chat/favorites.js'
 import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
+import { controlObservation } from '../services/chat/observationControl.js'
+import { readPhoneTools } from '../services/api/phoneBridge.js'
 import { onUploadNotice } from '../services/attachments.js'
 import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
+import { Cosmos } from './Cosmos.js'
+import { setSurface } from './theme.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -53,12 +59,16 @@ export const App = () => {
     state.activeId === null ? false : Object.hasOwn(state.streaming, state.activeId)
   )
   const activeId = useChatStore((state) => state.activeId)
+  // 流光与玻璃只留给新对话页，对话中保持简洁实色
+  const welcome = !floating && ready && activeId === null
 
   usePreventPageScroll(isMobile)
 
   useEffect(() => {
     document.documentElement.lang = locale
   }, [locale])
+
+  useEffect(() => setSurface(floating ? 'floating' : welcome ? 'welcome' : 'session'), [floating, welcome])
 
   useEffect(() => {
     const onFloatingChange = (event: Event) => {
@@ -69,13 +79,35 @@ export const App = () => {
           closeSettings()
           closeMobileSider()
           closeSearchPanel()
+          closeFavorites()
         }
       } else if (status === 'denied' || status === 'unavailable') {
         showToast({ key: status === 'denied' ? 'floatingChatPermission' : 'floatingChatUnavailable', type: 'error' })
       }
     }
+    const onFloatingSession = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail
+      if (typeof id === 'string' && useChatStore.getState().sessions.some(session => session.id === id)) {
+        selectSession(id)
+      }
+    }
+    const onObservationAction = (event: Event) => {
+      const action = (event as CustomEvent<string>).detail
+      if (action !== 'start' && action !== 'stop') { return }
+      const state = useChatStore.getState()
+      const candidate = state.activeId ?? readPhoneTools().ocrSessionId
+      const sessionId = state.sessions.some(session => session.id === candidate) ? candidate : ''
+      const error = controlObservation(action, sessionId)
+      if (error) { showToast(error) }
+    }
     window.addEventListener('android-floating-chat', onFloatingChange)
-    return () => window.removeEventListener('android-floating-chat', onFloatingChange)
+    window.addEventListener('android-floating-session', onFloatingSession)
+    window.addEventListener('android-observation-action', onObservationAction)
+    return () => {
+      window.removeEventListener('android-floating-chat', onFloatingChange)
+      window.removeEventListener('android-floating-session', onFloatingSession)
+      window.removeEventListener('android-observation-action', onObservationAction)
+    }
   }, [])
 
   // 文件数、存储空间达到上限时，附件上只显示「上传失败」，原因用 toast 说明
@@ -95,13 +127,16 @@ export const App = () => {
   useEffect(closeMobileSider, [activeId, isMobile])
 
   useEffect(() => {
-    void initChat()
-    // 首次打开先在设置里输入 API Key
-    ensureApiKey()
+    void initChat().then(() => {
+      // 文件夹配置完成 rehydrate 后，再判断是否缺少当前文件夹的 API Key。
+      ensureApiKey()
+    })
+    void initFavorites()
   }, [])
 
   return (
     <>
+      {welcome ? <Cosmos /> : null}
       <div ref={frameRef} className={styles.frame}>
         {floating ? null : isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
@@ -161,6 +196,7 @@ export const App = () => {
         {floating ? null : <SearchPanel />}
       </div>
       <SettingsDialog />
+      <FavoritesDialog />
       <CapturePreview />
       <Toast />
     </>

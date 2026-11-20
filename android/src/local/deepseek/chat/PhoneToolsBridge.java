@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.media.projection.MediaProjectionManager;
+import android.media.projection.MediaProjectionConfig;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -18,24 +19,36 @@ import android.webkit.JavascriptInterface;
 
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
 
 public final class PhoneToolsBridge {
-    private static final int CAPTURE = 4;
+    private static final int CAPTURE = 6;
     private static final int NOTIFICATIONS = 5;
+    static final String DEFAULT_FOLDER = "default";
+    private static final String LEGACY_PREFS = "phone_tools";
+    private static final String CONTEXT_PREFS = "phone_tools_context";
+    private static final String REGISTRY_PREFS = "phone_tools_folders";
+    private static final String FOLDER_PREFIX = "phone_tools_folder_";
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final BiConsumer<String, String> intentResult;
     private volatile Activity activity;
-    private boolean resumed;
+    private volatile boolean resumed;
+    private volatile String folderId;
     private boolean capturePending;
 
     PhoneToolsBridge(Context context, BiConsumer<String, String> intentResult) {
         this.context = context;
         this.intentResult = intentResult;
+        folderId = currentFolder(context);
     }
 
     void attach(Activity next) {
@@ -50,19 +63,158 @@ public final class PhoneToolsBridge {
 
     boolean isResumed() { return resumed; }
 
-    static SharedPreferences prefs(android.content.Context context) {
-        return context.getSharedPreferences("phone_tools", android.content.Context.MODE_PRIVATE);
+    static String folder(String folderId) {
+        return folderId == null || folderId.isEmpty() ? DEFAULT_FOLDER : folderId;
     }
 
-    private boolean enabled(String feature) { return prefs(context).getBoolean(feature, false); }
+    static String currentFolder(Context context) {
+        return folder(context.getSharedPreferences(CONTEXT_PREFS, Context.MODE_PRIVATE)
+            .getString("folderId", DEFAULT_FOLDER));
+    }
+
+    private static byte[] folderHash(String folderId) {
+        try {
+            return MessageDigest.getInstance("SHA-256")
+                .digest(folder(folderId).getBytes(StandardCharsets.UTF_8));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static String folderPrefsName(String folderId) {
+        StringBuilder encoded = new StringBuilder(FOLDER_PREFIX);
+        for (byte value : folderHash(folderId)) encoded.append(String.format("%02x", value & 0xff));
+        return encoded.toString();
+    }
+
+    static int folderJobId(String folderId) {
+        byte[] hash = folderHash(folderId);
+        int value = (hash[0] & 0x7f) << 24 | (hash[1] & 0xff) << 16 | (hash[2] & 0xff) << 8 | hash[3] & 0xff;
+        return 100_000 + value % 1_000_000_000;
+    }
+
+    static Set<String> folderIds(Context context) {
+        Set<String> ids = new HashSet<>(context.getSharedPreferences(REGISTRY_PREFS, Context.MODE_PRIVATE)
+            .getStringSet("ids", java.util.Collections.emptySet()));
+        ids.add(currentFolder(context));
+        return ids;
+    }
+
+    static SharedPreferences prefs(Context context) {
+        return prefs(context, currentFolder(context));
+    }
+
+    static synchronized SharedPreferences prefs(Context context, String folderId) {
+        String selected = folder(folderId);
+        Set<String> ids = new HashSet<>(context.getSharedPreferences(REGISTRY_PREFS, Context.MODE_PRIVATE)
+            .getStringSet("ids", java.util.Collections.emptySet()));
+        if (ids.add(selected)) {
+            context.getSharedPreferences(REGISTRY_PREFS, Context.MODE_PRIVATE).edit()
+                .putStringSet("ids", ids).apply();
+        }
+        SharedPreferences settings = context.getSharedPreferences(folderPrefsName(selected), Context.MODE_PRIVATE);
+        SharedPreferences state = context.getSharedPreferences(CONTEXT_PREFS, Context.MODE_PRIVATE);
+        if (DEFAULT_FOLDER.equals(selected) && !state.getBoolean("legacyMigrated", false)) {
+            SharedPreferences legacy = context.getSharedPreferences(LEGACY_PREFS, Context.MODE_PRIVATE);
+            Map<String, ?> oldValues = legacy.getAll();
+            Map<String, ?> newValues = settings.getAll();
+            SharedPreferences.Editor copy = settings.edit();
+            for (Map.Entry<String, ?> entry : oldValues.entrySet()) {
+                if (!newValues.containsKey(entry.getKey())) put(copy, entry.getKey(), entry.getValue());
+            }
+            copy.apply();
+            state.edit().putBoolean("legacyMigrated", true).apply();
+        }
+        return settings;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void put(SharedPreferences.Editor editor, String key, Object value) {
+        if (value instanceof String) editor.putString(key, (String) value);
+        else if (value instanceof Boolean) editor.putBoolean(key, (Boolean) value);
+        else if (value instanceof Integer) editor.putInt(key, (Integer) value);
+        else if (value instanceof Long) editor.putLong(key, (Long) value);
+        else if (value instanceof Float) editor.putFloat(key, (Float) value);
+        else if (value instanceof Set) editor.putStringSet(key, new HashSet<>((Set<String>) value));
+    }
+
+    static int ocrChangePercent(Context context) {
+        return ocrChangePercent(context, currentFolder(context));
+    }
+
+    static int ocrChangePercent(Context context, String folderId) {
+        SharedPreferences settings = prefs(context, folderId);
+        // Upgrade the previous default; explicitly saved values in the new UI remain respected.
+        if (!settings.getBoolean("ocrTextGateV2", false)) {
+            int old = settings.getInt("ocrChangePercent", 30);
+            settings.edit().putInt("ocrChangePercent", old == 30 ? 60 : old)
+                .putBoolean("ocrTextGateV2", true).apply();
+        }
+        return settings.getInt("ocrChangePercent", 60);
+    }
+
+    private SharedPreferences settings() { return prefs(context, folderId); }
+    private boolean enabled(String feature) { return settings().getBoolean(feature, false); }
+
+    @JavascriptInterface
+    public void setFolder(String next) {
+        String selected = folder(next);
+        if (selected.equals(folderId)) return;
+        ScreenObserver.stop();
+        folderId = selected;
+        context.getSharedPreferences(CONTEXT_PREFS, Context.MODE_PRIVATE).edit()
+            .putString("folderId", selected).apply();
+        settings();
+        ScreenCaptureService.refreshObserver(selected);
+        main.post(() -> ChatWebView.observationChanged(context,
+            enabled("ocr") && enabled("capture") && ScreenCaptureService.active()));
+    }
+
+    @JavascriptInterface
+    public void copyFolder(String source, String target) {
+        String from = folder(source);
+        String to = folder(target);
+        if (from.equals(to)) return;
+        SharedPreferences sourceSettings = prefs(context, from);
+        SharedPreferences targetSettings = prefs(context, to);
+        SharedPreferences.Editor copy = targetSettings.edit().clear();
+        for (Map.Entry<String, ?> entry : sourceSettings.getAll().entrySet()) {
+            put(copy, entry.getKey(), entry.getValue());
+        }
+        copy.apply();
+        if (targetSettings.getBoolean("heartbeat", false)) HeartbeatJob.enqueue(context, to);
+    }
+
+    @JavascriptInterface
+    public void deleteFolder(String target) {
+        String selected = folder(target);
+        if (selected.equals(folderId)) ScreenObserver.stop();
+        HeartbeatJob.deleteFolder(context, selected);
+        context.getSharedPreferences(folderPrefsName(selected), Context.MODE_PRIVATE).edit().clear().apply();
+        synchronized (PhoneToolsBridge.class) {
+            Set<String> ids = folderIds(context);
+            ids.remove(selected);
+            context.getSharedPreferences(REGISTRY_PREFS, Context.MODE_PRIVATE).edit()
+                .putStringSet("ids", ids).apply();
+        }
+    }
 
     @JavascriptInterface
     public String state() {
-        SharedPreferences settings = prefs(context);
+        SharedPreferences settings = settings();
         try {
-            return new JSONObject().put("capture", enabled("capture"))
+            return new JSONObject().put("folderId", folderId).put("capture", enabled("capture"))
                 .put("intents", enabled("intents")).put("heartbeat", enabled("heartbeat"))
                 .put("captureActive", ScreenCaptureService.active())
+                .put("captureStatus", ScreenCaptureService.status(context, folderId))
+                .put("captureMessage", ScreenCaptureService.message(context, folderId))
+                .put("ocr", enabled("ocr")).put("ocrSessionId", settings.getString("ocrSessionId", ""))
+                .put("ocrIntervalSeconds", settings.getInt("ocrIntervalSeconds", 1))
+                .put("ocrBatchChars", settings.getInt("ocrBatchChars", 500))
+                .put("ocrWaitSeconds", settings.getInt("ocrWaitSeconds", 15))
+                .put("ocrChangePercent", ocrChangePercent(context, folderId))
+                .put("ocrStatus", ScreenObserver.status()).put("ocrFrames", ScreenObserver.count())
+                .put("ocrBytes", ScreenObserver.bytes())
                 .put("mode", settings.getString("heartbeatMode", "off"))
                 .put("value", settings.getString("heartbeatValue", ""))
                 .put("task", settings.getString("heartbeatTask", ""))
@@ -81,12 +233,19 @@ public final class PhoneToolsBridge {
         switch (feature) {
             case "capture":
             case "intents":
-                prefs(context).edit().putBoolean(feature, value).apply();
+            case "ocr":
+                settings().edit().putBoolean(feature, value).apply();
                 if ("capture".equals(feature) && !value) stopCapture();
+                if ("ocr".equals(feature)) {
+                    if (!value) ScreenObserver.stop();
+                    ScreenCaptureService.refreshObserver(folderId);
+                    main.post(() -> ChatWebView.observationChanged(context,
+                        enabled("ocr") && enabled("capture") && ScreenCaptureService.active()));
+                }
                 break;
             case "heartbeat":
-                if (value) prefs(context).edit().putBoolean(feature, true).apply();
-                else HeartbeatJob.cancelSchedule(context, true);
+                if (value) settings().edit().putBoolean(feature, true).apply();
+                else HeartbeatJob.cancelSchedule(context, folderId, true);
                 break;
             default:
                 break;
@@ -102,9 +261,13 @@ public final class PhoneToolsBridge {
             try {
                 capturePending = true;
                 MediaProjectionManager manager = activity.getSystemService(MediaProjectionManager.class);
-                activity.startActivityForResult(manager.createScreenCaptureIntent(), CAPTURE);
+                Intent consent = Build.VERSION.SDK_INT >= 34
+                    ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+                    : manager.createScreenCaptureIntent();
+                activity.startActivityForResult(consent, CAPTURE);
             } catch (RuntimeException failed) {
                 capturePending = false;
+                captureFailure("error", "无法打开屏幕共享授权，请回到应用重试。");
             }
         });
     }
@@ -112,16 +275,26 @@ public final class PhoneToolsBridge {
     void onActivityResult(int code, int result, Intent data) {
         Activity activity = this.activity;
         if (activity == null) return;
-        if (code != CAPTURE) return;
+        if (code != CAPTURE || !capturePending) return;
         capturePending = false;
-        if (result != Activity.RESULT_OK || data == null || !enabled("capture")) return;
+        if (!enabled("capture")) return;
+        if (ScreenCaptureService.active()) return;
+        if (result != Activity.RESULT_OK || data == null) {
+            captureFailure("denied", "屏幕共享授权未完成，请重新授权。");
+            return;
+        }
         try {
             activity.startForegroundService(new Intent(activity, ScreenCaptureService.class)
-                .setAction(ScreenCaptureService.START)
+                .setAction(ScreenCaptureService.START).putExtra(ScreenCaptureService.FOLDER, folderId)
                 .putExtra(ScreenCaptureService.RESULT, result).putExtra(ScreenCaptureService.DATA, data));
         } catch (RuntimeException failed) {
-            // A failed launch is reflected as an inactive capture session.
+            captureFailure("error", "屏幕共享服务启动失败，请回到应用重新授权。");
         }
+    }
+
+    private void captureFailure(String status, String message) {
+        settings().edit().putString("captureStoppedStatus", status)
+            .putString("captureStoppedMessage", message).apply();
     }
 
     @JavascriptInterface
@@ -133,11 +306,35 @@ public final class PhoneToolsBridge {
     public String captureFrame() { return enabled("capture") ? ScreenCaptureService.frame() : ""; }
 
     @JavascriptInterface
-    public String captureStatus() { return enabled("capture") ? ScreenCaptureService.status() : "inactive"; }
+    public String captureStatus() {
+        return enabled("capture") ? ScreenCaptureService.status(context, folderId) : "inactive";
+    }
+
+    @JavascriptInterface
+    public String configureOcr(String sessionId, int intervalSeconds, int batchChars, int waitSeconds, int changePercent) {
+        if (sessionId == null || sessionId.isEmpty() || sessionId.length() > 200
+                || intervalSeconds < 1 || intervalSeconds > 60 || batchChars < 50 || batchChars > 10000
+                || waitSeconds < 1 || waitSeconds > 120 || changePercent < 5 || changePercent > 100)
+            return "OCR 参数无效";
+        settings().edit().putString("ocrSessionId", sessionId).putInt("ocrIntervalSeconds", intervalSeconds)
+            .putInt("ocrBatchChars", batchChars).putInt("ocrWaitSeconds", waitSeconds)
+            .putInt("ocrChangePercent", changePercent).putBoolean("ocrTextGateV2", true).apply();
+        ScreenCaptureService.refreshObserver(folderId);
+        return "";
+    }
+
+    @JavascriptInterface public String pendingObservation() { return ScreenObserver.pending(context, folderId); }
+    @JavascriptInterface public String observationBatch(String sessionId) { return ScreenObserver.active(sessionId); }
+    @JavascriptInterface public String observationImage(String batchId, String imageId, String sessionId) {
+        return ScreenObserver.image(batchId, imageId, sessionId);
+    }
+    @JavascriptInterface public void completeObservation(String batchId, String status) {
+        if ("done".equals(status) || "error".equals(status) || "busy".equals(status)) ScreenObserver.complete(batchId, status);
+    }
 
     @JavascriptInterface
     public String configureHeartbeat(String mode, String value, String task, String sessionId) {
-        return HeartbeatJob.configure(context, mode, value, task, sessionId);
+        return HeartbeatJob.configure(context, folderId, mode, value, task, sessionId);
     }
 
     @JavascriptInterface

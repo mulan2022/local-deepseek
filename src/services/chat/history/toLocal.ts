@@ -17,7 +17,7 @@ import type { ChatMessage, FileEntry, Fragment, SessionFile } from './format.js'
 import { sessionFilesDir } from './paths.js'
 
 export type LocalSession = {
-  session: Session
+  session: Omit<Session, 'folderId'>
   /** 本会话目录下应存在的图片：ZIP 条目名 → 文件 ID */
   images: Map<string, string>
 }
@@ -293,7 +293,7 @@ const buildTree = (file: SessionFile): Pick<Session, 'messages' | 'rootMessageId
 
 /** 转换单个会话，并列出本会话目录下需要从 ZIP 读取的图片。 */
 export const toLocalSession = (file: SessionFile): LocalSession => {
-  const session: Session = {
+  const session: Omit<Session, 'folderId'> = {
     id: file.id,
     // 空标题按「新对话」显示，导出时还原为 null。
     title: file.title ?? '',

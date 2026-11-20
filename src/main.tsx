@@ -3,8 +3,10 @@ import { App } from './app/App.js'
 import { setupTheme } from './app/theme.js'
 import { ensureKatex } from './services/markdown/katex.js'
 import { bindAndroidHeartbeat } from './services/chat/heartbeat.js'
+import { bindAndroidScreenObservation } from './services/chat/screenObservation.js'
 import './app/theme.css'
 import './app/global.css'
+import './app/cosmos.css'
 
 const favicon = document.createElement('link')
 favicon.rel = 'icon'
@@ -17,3 +19,4 @@ setupTheme()
 
 createRoot(document.getElementById('root') as HTMLElement).render(<App />)
 bindAndroidHeartbeat()
+bindAndroidScreenObservation()

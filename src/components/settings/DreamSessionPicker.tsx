@@ -17,6 +17,7 @@ export const DreamSessionPicker = () => {
   const dream = useDreamState()
   const apiKey = useSettings((state) => state.apiKey)
   const sessions = useChatStore((state) => state.sessions)
+  const activeFolderId = useChatStore((state) => state.activeFolderId)
   const [candidates, setCandidates] = useState<Candidate[]>()
   const [draft, setDraft] = useState<string[] | null>(null)
   const [search, setSearch] = useState('')
@@ -30,7 +31,7 @@ export const DreamSessionPicker = () => {
     }
     let active = true
     setLoadError(false)
-    void loadDreamCandidates().then((list) => {
+    void loadDreamCandidates(activeFolderId).then((list) => {
       if (active) {
         setCandidates(list)
       }
@@ -40,7 +41,7 @@ export const DreamSessionPicker = () => {
       }
     })
     return () => { active = false }
-  }, [sessions, memory.checkpoints, memory.skippedSessions, dream.running])
+  }, [activeFolderId, sessions, memory.checkpoints, memory.skippedSessions, dream.running])
 
   const firstRun = memory.dreamNeedsSelection || memory.log.length === 0
   const chosen = draft ?? memory.nextDreamSessionIds ?? []

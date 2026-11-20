@@ -47,7 +47,8 @@ import styles from './Settings.module.css'
  */
 export const SettingsDialog = () => {
   const open = useSettingsDialog((state) => state.open)
-  return open ? <SettingsContent /> : null
+  const folderId = useChatStore((state) => state.activeFolderId)
+  return open ? <SettingsContent key={folderId} /> : null
 }
 
 const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode }[] = [

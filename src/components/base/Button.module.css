@@ -54,17 +54,21 @@
 
 .primary {
   color: var(--dsw-alias-label-primary-foreground);
-  background-color: var(--dsw-alias-button-primary-fill);
+  background: var(--accretion);
+  transition:
+    box-shadow var(--ds-transition-duration) var(--ds-ease-in-out),
+    opacity var(--ds-transition-duration) var(--ds-ease-in-out);
 
   &:hover:not(:disabled) {
-    background-color: var(--dsw-alias-button-primary-hover);
+    box-shadow: var(--accent-shadow-strong);
+    filter: brightness(1.05);
   }
 }
 
 .outlined {
   color: var(--dsw-alias-label-primary);
-  background-color: transparent;
-  border-color: var(--dsw-alias-border-l2);
+  background-color: var(--glass-fill);
+  border-color: var(--glass-border);
   font-weight: 400;
 
   &:hover:not(:disabled) {

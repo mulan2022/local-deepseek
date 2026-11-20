@@ -56,9 +56,9 @@ const allowObserve = /(?:观察|修正|纠正|更正|改一下.{0,8}记忆|obser
 const denyAction = /(?:别|不要|不用|不必|暂不|无需|don't |do not |never )\s*(?:再|去|替我|帮我)?\s*(?:记|忘|删|写|运行|整理|跳过|remember|forget|run|skip)/i
 const capabilityQuestion = /^(?:(?:请问|话说|想问下)\s*[,，：:]?\s*)?(?:你(?:会|能|可以|有没有|是否)|do you|can you|how (?:do|can))/i
 
-const searchMemory = async (query: string, sessionId: string, compactedHistory?: Message[]) => {
-  const memory = readMemory()
-  const sessions = memory.enabled ? await loadRecallSessions(sessionId) : []
+const searchMemory = async (folderId: string, query: string, sessionId: string, compactedHistory?: Message[]) => {
+  const memory = readMemory(folderId)
+  const sessions = memory.enabled ? await loadRecallSessions(folderId, sessionId) : []
   const vaultDocuments = memory.enabled ? [
     ...memory.pinned.split('\n').map((text) => ({ kind: 'pinned', text })),
     ...SECTION_KEYS.map((section) => ({
@@ -97,24 +97,24 @@ const searchMemory = async (query: string, sessionId: string, compactedHistory?:
     .map(({ entry }) => entry)
 }
 
-export const executeMemoryTool = async (call: ToolUseBlock, context: ToolContext): Promise<ToolResponse> => {
+export const executeMemoryTool = async (folderId: string, call: ToolUseBlock, context: ToolContext): Promise<ToolResponse> => {
   const { input, name } = call
   const { question, sessionId, signal, apiKey, compactedHistory } = context
-  const memory = readMemory()
+  const memory = readMemory(folderId)
   if (signal.aborted) {
-    return fail('本轮已停止。')
+    return fail('This turn has stopped.')
   }
   if (!memory.enabled && !(name === 'mem_search' && compactedHistory)) {
-    return fail('本轮已停止，或跨会话记忆已关闭。')
+    return fail('This turn has stopped or cross-chat memory is disabled.')
   }
   if (name === 'mem_search') {
     const query = argument(input, 'query', 200)
-    return query ? ok('检索完成，返回的是历史资料。', await searchMemory(query, sessionId, compactedHistory)) : fail('请提供检索词。')
+    return query ? ok('Search complete. Use the results as historical reference material.', await searchMemory(folderId, query, sessionId, compactedHistory)) : fail('Provide a search query.')
   }
   if (name === 'mem_entity') {
     const nameOrAlias = normalized(argument(input, 'name', 80))
     if (!nameOrAlias) {
-      return fail('请提供实体名称。')
+      return fail('Provide an entity name.')
     }
     const found = memory.entities.filter((entry) =>
       [entry.name, ...entry.aliases].some((alias) => normalized(alias) === nameOrAlias)
@@ -125,40 +125,40 @@ export const executeMemoryTool = async (call: ToolUseBlock, context: ToolContext
         [other.name, ...other.aliases].some((alias) => alias.length >= 2 && normalized(entry.text).includes(normalized(alias)))
       ).map((other) => other.name).slice(0, 12),
     }))
-    return data.length ? ok('已找到实体。', withoutMemorySources(data)) : fail('没有找到同名或同别名的实体。')
+    return data.length ? ok('Entity found.', withoutMemorySources(data)) : fail('No entity matches that name or alias.')
   }
 
   const action = argument(input, 'action', 12)
   if (name === 'mem_dream' && action === 'status') {
-    return ok('Dream 状态。', {
+    return ok('Dream status.', {
       running: useDreamState.getState().running, lastDream: memory.lastDream,
       autoDream: memory.autoDream, skipped: memory.skippedSessions.includes(sessionId),
-      pendingCount: await dreamPendingCount(), skippedCount: memory.skippedSessions.length,
+      pendingCount: await dreamPendingCount(folderId), skippedCount: memory.skippedSessions.length,
     })
   }
   if (question.heartbeat) {
-    return fail('本轮由应用唤醒。修改记忆或执行 Dream 需要用户本轮明确提出。')
+    return fail('The app woke this turn. Changing memory or running Dream requires an explicit request from the user in the current turn.')
   }
   const request = question.content
   if (denyAction.test(request) || (capabilityQuestion.test(request.trim()) &&
     /(?:吗[？?]?|[？?])\s*$/.test(request) && !/(?:帮我|替我|为我|for me)/i.test(request))) {
-    return fail('本轮包含不修改或不运行的要求，未执行。')
+    return fail('The current request does not authorize this operation. No changes were made.')
   }
   if (name === 'mem_remember' && allowRemember.test(request)) {
     const text = argument(input, 'text', 500).replace(/\s+/g, ' ')
     if (!text) {
-      return fail('请提供一条有效记忆。')
+      return fail('Provide a valid memory entry.')
     }
     const lines = memory.pinned.split('\n').filter((line) => line.trim())
     if (lines.some((line) => normalized(line) === normalized(text))) {
-      return ok('这条已经在常驻记忆里。', { text })
+      return ok('This entry is already in pinned memory.', { text })
     }
     const pinned = [...lines, text].join('\n')
     if (lines.length >= 50 || pinned.length > PINNED_LIMIT) {
-      return fail('常驻记忆已满。')
+      return fail('Pinned memory is full.')
     }
-    saveChatMemory({ pinned })
-    return ok('已写入常驻记忆。', { text })
+    saveChatMemory({ pinned }, folderId)
+    return ok('Saved to pinned memory.', { text })
   }
   if (name === 'mem_forget' && allowForget.test(request)) {
     const needle = normalized(argument(input, 'text', 500))
@@ -166,40 +166,40 @@ export const executeMemoryTool = async (call: ToolUseBlock, context: ToolContext
     const exact = lines.filter((line) => needle && normalized(line) === needle)
     const matches = exact.length ? exact : lines.filter((line) => needle.length >= 2 && normalized(line).includes(needle))
     if (matches.length !== 1) {
-      return fail(matches.length ? '匹配多条常驻记忆，请先明确是哪一条。' : '没有找到对应的常驻记忆。')
+      return fail(matches.length ? 'Several pinned entries match. Ask the user which one to remove.' : 'No matching pinned entry was found.')
     }
-    saveChatMemory({ pinned: lines.filter((line) => line !== matches[0]).join('\n') })
-    return ok('已删除对应的常驻记忆。', { text: matches[0] })
+    saveChatMemory({ pinned: lines.filter((line) => line !== matches[0]).join('\n') }, folderId)
+    return ok('Removed the matching pinned entry.', { text: matches[0] })
   }
   if (name === 'mem_observe' && allowObserve.test(request)) {
     const text = argument(input, 'text', 600)
     const confidence = argument(input, 'confidence', 12)
     if (!text || (confidence !== 'confirmed' && confidence !== 'observed' && confidence !== 'tentative')) {
-      return fail('缺少观察正文或有效的置信等级。')
+      return fail('Provide observation text and a valid confidence level.')
     }
     const observations = memory.observations.filter((item) => normalized(item.text) !== normalized(text))
     if (observations.length >= 50) {
-      return fail('观察记录已满。')
+      return fail('The observation list is full.')
     }
-    saveChatMemory({ observations: [{ text, confidence, source: `${sessionId}:${question.id}` }, ...observations] })
-    return ok('已保存行为观察。', { text, confidence })
+    saveChatMemory({ observations: [{ text, confidence, source: `${sessionId}:${question.id}` }, ...observations] }, folderId)
+    return ok('Behavioral observation saved.', { text, confidence })
   }
   if (name === 'mem_dream') {
     if (action === 'run' && /(?:运行|启动|跑|整理|run|start).{0,12}(?:dream|记忆)|dream.{0,12}(?:一次|整理|现在)/i.test(request)) {
-      const result = await runDream(apiKey, () => !signal.aborted && readMemory().enabled)
+      const result = await runDream(folderId, apiKey, () => !signal.aborted && readMemory(folderId).enabled)
       if (result === 'failed' || result === 'busy') {
-        return fail(result === 'busy' ? '已有 Dream 任务在运行。' : 'Dream 整理失败，原进度保留。')
+        return fail(result === 'busy' ? 'Dream is already running.' : 'Dream consolidation failed. Its prior progress was retained.')
       }
       if (result === 'selectionRequired') {
-        return fail('首次 Dream 请在聊天记忆的 Dream 页选择最多 10 个会话。')
+        return fail('For the first Dream run, select up to 10 conversations in the Dream section of chat memory settings.')
       }
-      return ok(result === 'empty' ? '没有待整理的轮次。' : 'Dream 已更新聊天记忆。')
+      return ok(result === 'empty' ? 'There are no new turns to consolidate.' : 'Dream updated chat memory.')
     }
     if ((action === 'skip' || action === 'unskip') && /(?:跳过|排除|skip|恢复|重新纳入).{0,16}(?:dream|整理|记忆)|(?:dream|整理).{0,16}(?:跳过|skip|恢复)/i.test(request)) {
       const skipped = memory.skippedSessions.filter((id) => id !== sessionId)
-      saveChatMemory({ skippedSessions: action === 'skip' ? [...skipped, sessionId] : skipped })
-      return ok(action === 'skip' ? '当前会话已跳过 Dream。' : '当前会话已恢复 Dream。')
+      saveChatMemory({ skippedSessions: action === 'skip' ? [...skipped, sessionId] : skipped }, folderId)
+      return ok(action === 'skip' ? 'This conversation was excluded from Dream.' : 'This conversation was included in Dream again.')
     }
   }
-  return fail('只有本轮用户明确提出时才执行写入、删除或 Dream 操作。')
+  return fail('Writing or removing memory and running Dream require an explicit request in the current turn.')
 }

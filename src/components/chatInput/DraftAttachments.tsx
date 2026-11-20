@@ -13,10 +13,12 @@ const UPLOADING: UploadTask = { status: 'uploading' }
 /** 列表只随草稿附件变化更新；每张卡片独立订阅自己的上传状态。 */
 export const DraftAttachments = memo(function DraftAttachments({
   items,
+  useCloudFiles,
   onRetry,
   onRemove,
 }: {
   items: DraftAttachment[]
+  useCloudFiles: boolean
   onRetry: (id: string) => void
   onRemove: (id: string) => void
 }) {
@@ -29,6 +31,7 @@ export const DraftAttachments = memo(function DraftAttachments({
         <AttachmentItem
           key={item.id}
           item={item}
+          useCloudFiles={useCloudFiles}
           onRetry={() => onRetry(item.id)}
           onRemove={() => onRemove(item.id)}
         />
@@ -40,19 +43,21 @@ export const DraftAttachments = memo(function DraftAttachments({
 /** 输入框里的文件：图片显示缩略图，其余显示文件卡片 */
 const AttachmentItem = ({
   item,
+  useCloudFiles,
   onRetry,
   onRemove,
 }: {
   item: DraftAttachment
+  useCloudFiles: boolean
   onRetry: () => void
   onRemove: () => void
 }) => {
   const t = useTranslate()
-  const task = useUploads((state) => state.tasks[item.id] ?? UPLOADING)
-  const status = task.status
-  const error = task.status === 'error' ? t(task.error.key, task.error.params) : undefined
+  const task = useUploads((state) => useCloudFiles && !item.local ? state.tasks[item.id] ?? UPLOADING : undefined)
+  const status = task?.status ?? 'done'
+  const error = task?.status === 'error' ? t(task.error.key, task.error.params) : undefined
   // 过大、格式不支持等重试无效的失败只提示原因，需删除后再发送
-  const retry = task.status === 'error' && task.retryable ? onRetry : undefined
+  const retry = task?.status === 'error' && task.retryable ? onRetry : undefined
   const failed = status === 'error'
   const retryLabel = t('uploadRetry', { message: error ?? t('uploadFileStatusFailed') })
   // 「上传失败」只显示重试图标，其余原因写在图片上：可重试时在图标下方，不可重试时贴底

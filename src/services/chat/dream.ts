@@ -127,10 +127,10 @@ const mergeVault = (
 }
 
 const prepareBatch = async (
-  checkpoints: Record<string, DreamCheckpoint>, skipped: string[], selectedIds?: ReadonlySet<string>,
-  includeAssistantReplies = false
+  folderId: string, checkpoints: Record<string, DreamCheckpoint>, skipped: string[],
+  selectedIds?: ReadonlySet<string>, includeAssistantReplies = false
 ) => {
-  const sessions = await loadRecallSessions(undefined, Infinity, selectedIds, includeAssistantReplies)
+  const sessions = await loadRecallSessions(folderId, undefined, Infinity, selectedIds, includeAssistantReplies)
   return sessions.reverse().flatMap((session) => {
     if (skipped.includes(session.id)) {
       return []
@@ -161,22 +161,22 @@ const prepareBatch = async (
   })
 }
 
-export const dreamPendingCount = async () => {
-  const memory = readMemory()
-  return (await prepareBatch(memory.checkpoints, memory.skippedSessions)).length
+export const dreamPendingCount = async (folderId: string) => {
+  const memory = readMemory(folderId)
+  return (await prepareBatch(folderId, memory.checkpoints, memory.skippedSessions)).length
 }
 
-export const loadDreamCandidates = async () => {
-  const memory = readMemory()
-  return (await prepareBatch(memory.checkpoints, [])).reverse().map(({ id, date, title }) => ({
+export const loadDreamCandidates = async (folderId: string) => {
+  const memory = readMemory(folderId)
+  return (await prepareBatch(folderId, memory.checkpoints, [])).reverse().map(({ id, date, title }) => ({
     id, date, title, skipped: memory.skippedSessions.includes(id),
   }))
 }
 
 export type DreamOptions = { automatic?: boolean; sessionIds?: readonly string[] }
 
-const processBatch = async (apiKey: string, canCommit: () => boolean, options: DreamOptions) => {
-  const previous = readMemory()
+const processBatch = async (folderId: string, apiKey: string, canCommit: () => boolean, options: DreamOptions) => {
+  const previous = readMemory(folderId)
   const firstRun = previous.dreamNeedsSelection || previous.log.length === 0
   const selected = options.sessionIds ?? previous.nextDreamSessionIds
   if (firstRun && !selected?.length) {
@@ -184,7 +184,7 @@ const processBatch = async (apiKey: string, canCommit: () => boolean, options: D
   }
   const selectedIds = selected === null ? undefined : new Set(selected.slice(0, DREAM_SELECTION_LIMIT))
   const pending = await prepareBatch(
-    previous.checkpoints, options.automatic ? previous.skippedSessions : [], selectedIds, true
+    folderId, previous.checkpoints, options.automatic ? previous.skippedSessions : [], selectedIds, true
   )
   const batch = selectedIds ? pending : pending.slice(0, BATCH_SIZE)
   if (!batch.length) {
@@ -240,7 +240,7 @@ const processBatch = async (apiKey: string, canCommit: () => boolean, options: D
   if (!canCommit()) {
     throw new Error('Dream paused')
   }
-  const current = readMemory()
+  const current = readMemory(folderId)
   if (JSON.stringify(current.sections) !== JSON.stringify(previous.sections) ||
     JSON.stringify(current.sectionSources) !== JSON.stringify(previous.sectionSources) ||
     JSON.stringify(current.observations) !== JSON.stringify(previous.observations) ||
@@ -258,12 +258,12 @@ const processBatch = async (apiKey: string, canCommit: () => boolean, options: D
     ...(remainingSelection ? { nextDreamSessionIds: remainingSelection.length ? remainingSelection : null } : {}),
     ...(firstRun || selectedIds || !more ? { lastDream: at } : {}),
     log: [{ at, sessions: batch.length }, ...current.log].slice(0, 25),
-  })
+  }, folderId)
   return 'saved'
 }
 
 export const runDream = async (
-  apiKey: string, canCommit: () => boolean = () => true, options: DreamOptions = {}
+  folderId: string, apiKey: string, canCommit: () => boolean = () => true, options: DreamOptions = {}
 ): Promise<DreamResult> => {
   if (useDreamState.getState().running) {
     return 'busy'
@@ -275,11 +275,11 @@ export const runDream = async (
     if (!canSave()) {
       return 'busy'
     }
-    return await processBatch(apiKey, canSave, options)
+    return await processBatch(folderId, apiKey, canSave, options)
   }
   try {
     result = navigator.locks
-      ? await navigator.locks.request(LOCK_NAME, { ifAvailable: true }, (lock) => lock ? run() : 'busy')
+      ? await navigator.locks.request(`${LOCK_NAME}:${folderId}`, { ifAvailable: true }, (lock) => lock ? run() : 'busy')
       : await run()
   } catch {
     result = 'failed'

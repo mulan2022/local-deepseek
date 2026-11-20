@@ -1,6 +1,6 @@
 {
   "name": "chat-demo",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "基于 DeepSeek API 的静态聊天示例。",
   "license": "MIT",
   "private": true,
@@ -29,6 +29,7 @@
     "mermaid": "11.10.1",
     "micromark-extension-gfm": "3.0.0",
     "micromark-extension-llm-math": "3.1.0",
+    "pdfjs-dist": "6.5.438",
     "prismjs": "1.30.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",

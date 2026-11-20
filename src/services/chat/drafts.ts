@@ -10,6 +10,7 @@ import {
   type UploadTask,
 } from '../attachments.js'
 import type { FileAttachment } from './types.js'
+import { getActiveFolderId } from './folderStorage.js'
 
 export type DraftAttachment = {
   /** 本地标识，也是 IndexedDB 原件与上传任务的 key */
@@ -17,28 +18,34 @@ export type DraftAttachment = {
   file: File
   isImage: boolean
   previewUrl: string | null
+  local: boolean
 }
 
 type Draft = { text: string; attachments: DraftAttachment[] }
 
 export const EMPTY_DRAFT: Draft = { text: '', attachments: [] }
 
-/** 草稿只保存在本次页面的内存中，独立于会话详情缓存；null 是新对话的草稿。 */
-export const useDrafts = create<{ drafts: Map<string | null, Draft> }>(() => ({
+type DraftKey = string
+const draftKey = (sessionId: string | null, folderId = getActiveFolderId()): DraftKey =>
+  JSON.stringify([folderId, sessionId])
+
+/** 草稿只保存在本次页面的内存中，按文件夹和会话隔离；null 是新对话的草稿。 */
+export const useDrafts = create<{ drafts: Map<DraftKey, Draft> }>(() => ({
   drafts: new Map(),
 }))
 
-export const getDraft = (sessionId: string | null): Draft =>
-  useDrafts.getState().drafts.get(sessionId) ?? EMPTY_DRAFT
+export const getDraft = (sessionId: string | null, folderId = getActiveFolderId()): Draft =>
+  useDrafts.getState().drafts.get(draftKey(sessionId, folderId)) ?? EMPTY_DRAFT
 
 const updateDraft = (sessionId: string | null, update: (draft: Draft) => Draft) =>
   useDrafts.setState((state) => {
-    const draft = update(state.drafts.get(sessionId) ?? EMPTY_DRAFT)
+    const key = draftKey(sessionId)
+    const draft = update(state.drafts.get(key) ?? EMPTY_DRAFT)
     const drafts = new Map(state.drafts)
     if (draft.text || draft.attachments.length > 0) {
-      drafts.set(sessionId, draft)
+      drafts.set(key, draft)
     } else {
-      drafts.delete(sessionId)
+      drafts.delete(key)
     }
     return { drafts }
   })
@@ -61,7 +68,7 @@ const upload = (attachment: DraftAttachment, apiKey: string) => {
 export const addDraftFiles = (
   sessionId: string | null,
   files: File[],
-  apiKey: string
+  apiKey?: string
 ): TranslationMessage | null => {
   if (files.length === 0) {
     return null
@@ -77,10 +84,13 @@ export const addDraftFiles = (
       file,
       isImage: image,
       previewUrl: image ? URL.createObjectURL(file) : null,
+      local: apiKey === undefined,
     }
   })
   updateDraft(sessionId, (draft) => ({ ...draft, attachments: [...draft.attachments, ...added] }))
-  added.forEach((attachment) => upload(attachment, apiKey))
+  if (apiKey !== undefined) {
+    added.forEach((attachment) => upload(attachment, apiKey))
+  }
   return null
 }
 
@@ -96,20 +106,20 @@ export const retryDraftAttachment = (
 }
 
 /** 发送按钮和实际提交共用规则：有内容，且全部附件已上传成功。 */
-export const prepareDraftMessage = (draft: Draft, tasks: Record<string, UploadTask>) => {
+export const prepareDraftMessage = (draft: Draft, tasks: Record<string, UploadTask>, useCloudFiles: boolean) => {
   const text = draft.text.trim()
   if (!text && draft.attachments.length === 0) {
     return null
   }
-  const files: (FileAttachment & { serverId: string; blob: Blob })[] = []
+  const files: (FileAttachment & { blob: Blob })[] = []
   for (const attachment of draft.attachments) {
     const task = tasks[attachment.id]
-    if (task?.status !== 'done' || !task.serverId) {
+    if (useCloudFiles && !attachment.local && (task?.status !== 'done' || !task.serverId)) {
       return null
     }
     files.push({
       id: attachment.id,
-      serverId: task.serverId,
+      serverId: useCloudFiles && task?.status === 'done' ? task.serverId : null,
       name: attachment.file.name,
       size: attachment.file.size,
       isImage: attachment.isImage,
@@ -151,6 +161,18 @@ export const clearSentDraft = (sessionId: string | null) => {
 export const clearDraft = (sessionId: string | null) => {
   getDraft(sessionId).attachments.forEach((attachment) => releaseAttachment(attachment, true))
   updateDraft(sessionId, () => EMPTY_DRAFT)
+}
+
+export const clearFolderDrafts = (folderId: string) => {
+  const drafts = new Map(useDrafts.getState().drafts)
+  for (const [key, draft] of drafts) {
+    const [owner] = JSON.parse(key) as [string, string | null]
+    if (owner === folderId) {
+      draft.attachments.forEach((attachment) => releaseAttachment(attachment, true))
+      drafts.delete(key)
+    }
+  }
+  useDrafts.setState({ drafts })
 }
 
 export const clearAllDrafts = () => {

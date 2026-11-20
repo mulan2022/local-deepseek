@@ -26,6 +26,7 @@ import java.util.Map;
 
 public final class ChatWebView {
     private static final String ORIGIN = "https://localhost";
+    private static final String FLOATING_AUDIO = "/_floating_voice/";
     private static final String CONTENT_SECURITY_POLICY =
         "script-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; "
         + "connect-src 'self' https://api.deepseek.com";
@@ -39,6 +40,16 @@ public final class ChatWebView {
     private volatile MainActivity activity;
     private volatile boolean floating;
     private boolean runningHeartbeat;
+    private boolean observing;
+
+    static void observationChanged(Context context, boolean enabled) {
+        ChatWebView page = enabled ? get(context) : current;
+        if (page == null) return;
+        page.observing = enabled;
+        if (page.activity != null) page.activity.refreshFloatingObservation();
+        page.view.evaluateJavascript("window.dispatchEvent(new Event('android-screen-observation'))", null);
+        if (!enabled) page.releaseIfIdle();
+    }
 
     private ChatWebView(Context source) {
         context = source.getApplicationContext();
@@ -79,7 +90,6 @@ public final class ChatWebView {
         activity = null;
         viewContext.setBaseContext(context);
         phoneTools.attach(null);
-        view.setOnApplyWindowInsetsListener(null);
         view.setWebChromeClient(null);
         releaseIfIdle();
     }
@@ -104,6 +114,11 @@ public final class ChatWebView {
         return page != null && page.activity == null;
     }
 
+    static boolean isFullChatVisible() {
+        ChatWebView page = current;
+        return page != null && !page.floating && page.phoneTools.isResumed();
+    }
+
     static boolean isForeground() {
         ChatWebView page = current;
         return page != null && (page.floating || page.phoneTools.isResumed());
@@ -115,6 +130,31 @@ public final class ChatWebView {
             + JSONObject.quote(status) + "}))", null);
     }
 
+    void requestObservation(String action) {
+        view.evaluateJavascript("window.dispatchEvent(new CustomEvent('android-observation-action',{detail:"
+            + JSONObject.quote(action) + "}))", null);
+    }
+
+    void requestFloatingVoice(String action, String runId) {
+        view.evaluateJavascript("window.dispatchEvent(new CustomEvent('android-floating-voice',{detail:{action:"
+            + JSONObject.quote(action) + ",id:" + JSONObject.quote(runId) + "}}))", null);
+    }
+
+    private String floatingAudioId;
+    private byte[] floatingAudio;
+
+    synchronized void setFloatingAudio(String runId, byte[] wav) {
+        floatingAudioId = runId;
+        floatingAudio = wav;
+    }
+
+    private synchronized byte[] takeFloatingAudio(String runId) {
+        if (!runId.equals(floatingAudioId)) return null;
+        byte[] wav = floatingAudio;
+        setFloatingAudio(null, null);
+        return wav;
+    }
+
     public final class FloatingChat {
         @JavascriptInterface public boolean active() { return floating; }
 
@@ -123,9 +163,20 @@ public final class ChatWebView {
             if (owner != null) owner.runOnUiThread(owner::openFloatingChat);
         }
 
+        @JavascriptInterface public void notifyReply(String session, String run, String text, boolean currentChat) {
+            MainActivity owner = activity;
+            if (owner != null && floating && session != null && run != null && text != null)
+                owner.runOnUiThread(() -> owner.floatingReply(session, run, text, currentChat));
+        }
+
         @JavascriptInterface public void focusInput(boolean focused) {
             MainActivity owner = activity;
             if (owner != null && floating) owner.runOnUiThread(() -> owner.focusFloatingInput(focused));
+        }
+
+        @JavascriptInterface public void voiceState(String runId, String status) {
+            MainActivity owner = activity;
+            if (owner != null && floating) owner.runOnUiThread(() -> owner.floatingVoiceState(runId, status));
         }
     }
 
@@ -140,7 +191,7 @@ public final class ChatWebView {
     }
 
     private void releaseIfIdle() {
-        if (activity != null || runningHeartbeat) return;
+        if (activity != null || runningHeartbeat || observing) return;
         current = null;
         providerApi.close();
         view.destroy();
@@ -190,9 +241,15 @@ public final class ChatWebView {
             Uri uri = request.getUrl();
             if (!isLocal(uri)) return null;
             String path = uri.getPath();
-            if (!request.isForMainFrame() && "GET".equals(request.getMethod()) && path != null
-                    && path.startsWith(ProviderApi.PREFIX)) {
-                return providerApi.serve(path.substring(ProviderApi.PREFIX.length()));
+            if (!request.isForMainFrame() && "GET".equals(request.getMethod()) && path != null) {
+                if (path.startsWith(ProviderApi.PREFIX)) {
+                    return providerApi.serve(path.substring(ProviderApi.PREFIX.length()));
+                }
+                if (path.startsWith(FLOATING_AUDIO)) {
+                    byte[] wav = takeFloatingAudio(path.substring(FLOATING_AUDIO.length()));
+                    return wav == null ? missingAsset() : new WebResourceResponse("audio/wav", null, 200, "OK",
+                        Collections.singletonMap("Cache-Control", "no-store"), new ByteArrayInputStream(wav));
+                }
             }
             if ("/".equals(path)) path = "/index.html";
             if (!"/index.html".equals(path) && !"/LICENSE".equals(path)

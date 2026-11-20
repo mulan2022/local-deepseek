@@ -1,9 +1,20 @@
 import { createId } from '../../utils/id.js'
+import { getActiveFolderId, readFolderValue, writeFolderValue } from '../chat/folderStorage.js'
 
-export type PhoneFeature = 'capture' | 'intents' | 'heartbeat'
+export type PhoneFeature = 'capture' | 'intents' | 'heartbeat' | 'ocr'
 
 export type PhoneToolsState = Record<PhoneFeature, boolean> & {
   captureActive: boolean
+  captureStatus: string
+  captureMessage: string
+  ocrSessionId: string
+  ocrIntervalSeconds: number
+  ocrBatchChars: number
+  ocrWaitSeconds: number
+  ocrChangePercent: number
+  ocrStatus: string
+  ocrFrames: number
+  ocrBytes: number
   mode: 'off' | 'interval' | 'daily' | 'at' | 'after'
   value: string
   task: string
@@ -18,11 +29,19 @@ declare global {
   interface Window {
     AndroidPhoneTools?: {
       state(): string
+      setFolder?(folderId: string): void
+      copyFolder?(sourceFolderId: string, targetFolderId: string): void
+      deleteFolder?(folderId: string): void
       setEnabled(feature: PhoneFeature, enabled: boolean): void
       startCapture(): void
       stopCapture(): void
       captureFrame(): string
       captureStatus?(): string
+      configureOcr?(sessionId: string, intervalSeconds: number, batchChars: number, waitSeconds: number, changePercent: number): string
+      pendingObservation?(): string
+      observationBatch?(sessionId: string): string
+      observationImage?(batchId: string, imageId: string, sessionId: string): string
+      completeObservation?(batchId: string, status: 'done' | 'busy' | 'error'): void
       configureHeartbeat(mode: string, value: string, task: string, sessionId: string): string
       requestNotifications(): void
       runIntent(action: string, args: string, requestId: string): string
@@ -61,22 +80,38 @@ const SETTINGS_KEY = 'chat-demo:phone-tools'
 export const phoneSettingsChangeEvent = 'phone-settings-change'
 const noSchedule: HeartbeatSchedule = { mode: 'off', value: '', task: '', sessionId: '' }
 
-export const readPhoneTools = (): PhoneToolsState => {
+export const readPhoneTools = (folderId = getActiveFolderId()): PhoneToolsState => {
   const defaults: PhoneToolsState = {
-    capture: false, intents: false, heartbeat: false, captureActive: false,
+    capture: false, intents: false, heartbeat: false, ocr: false, captureActive: false, captureStatus: '', captureMessage: '',
+    ocrSessionId: '', ocrIntervalSeconds: 1, ocrBatchChars: 500, ocrWaitSeconds: 15,
+    ocrChangePercent: 60, ocrStatus: '', ocrFrames: 0, ocrBytes: 0,
     ...noSchedule, nextAt: 0, lastAt: 0, lastResult: '', lastFailed: false,
   }
   try {
-    const stored = getPhoneBridge()?.state() ?? localStorage.getItem(SETTINGS_KEY)
+    const stored = getPhoneBridge()?.state() ?? readFolderValue(folderId, SETTINGS_KEY)
     return { ...defaults, ...JSON.parse(stored ?? '{}') }
   } catch {
     return defaults
   }
 }
 
+export const activatePhoneToolsFolder = (folderId: string) => {
+  getPhoneBridge()?.setFolder?.(folderId)
+  window.dispatchEvent(new Event(phoneSettingsChangeEvent))
+}
+
+export const copyPhoneToolsFolder = (sourceFolderId: string, targetFolderId: string) => {
+  getPhoneBridge()?.copyFolder?.(sourceFolderId, targetFolderId)
+}
+
+export const deletePhoneToolsFolder = (folderId: string) => {
+  getPhoneBridge()?.deleteFolder?.(folderId)
+}
+
 const saveBrowserPhoneTools = (update: Partial<PhoneToolsState>) => {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...readPhoneTools(), ...update }))
+    const folderId = getActiveFolderId()
+    writeFolderValue(folderId, SETTINGS_KEY, JSON.stringify({ ...readPhoneTools(folderId), ...update }))
     window.dispatchEvent(new Event(phoneSettingsChangeEvent))
     return true
   } catch {
@@ -88,6 +123,7 @@ export const setPhoneFeature = (feature: PhoneFeature, enabled: boolean) => {
   const bridge = getPhoneBridge()
   if (bridge) {
     bridge.setEnabled(feature, enabled)
+    window.dispatchEvent(new Event(phoneSettingsChangeEvent))
     return true
   }
   return saveBrowserPhoneTools({
@@ -103,6 +139,23 @@ export const savePhoneSchedule = (schedule: HeartbeatSchedule) => {
     return bridge.configureHeartbeat(mode, value, task, sessionId)
   }
   return saveBrowserPhoneTools(schedule.mode === 'off' ? noSchedule : schedule) ? '' : null
+}
+
+export type OcrSettings = Pick<PhoneToolsState, 'ocrSessionId' | 'ocrIntervalSeconds' | 'ocrBatchChars' | 'ocrWaitSeconds' | 'ocrChangePercent'>
+export const saveOcrSettings = (value: OcrSettings) => {
+  const ranges = [
+    [value.ocrIntervalSeconds, 1, 60], [value.ocrBatchChars, 50, 10000],
+    [value.ocrWaitSeconds, 1, 120], [value.ocrChangePercent, 5, 100],
+  ] as const
+  if (!value.ocrSessionId || ranges.some(([n, min, max]) => !Number.isInteger(n) || n < min || n > max)) {
+    return 'OCR 参数无效'
+  }
+  const bridge = getPhoneBridge()
+  if (bridge) {
+    return bridge.configureOcr?.(value.ocrSessionId, value.ocrIntervalSeconds, value.ocrBatchChars,
+      value.ocrWaitSeconds, value.ocrChangePercent) ?? '请安装支持 OCR 的安卓客户端'
+  }
+  return saveBrowserPhoneTools(value) ? '' : '无法保存 OCR 设置'
 }
 
 export const runPhoneIntent = (action: string, args: string, signal: AbortSignal): Promise<string> => {

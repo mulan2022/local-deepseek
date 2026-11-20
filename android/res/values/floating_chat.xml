@@ -4,4 +4,18 @@
     <string name="floating_chat_expand">Open full chat</string>
     <string name="floating_chat_close">Close floating chat</string>
     <string name="floating_chat_capture_preview">Preview screen capture</string>
+    <string name="floating_chat_ball">Chat ball: drag to move, double-tap to reply, hold to speak</string>
+    <string name="floating_chat_menu">Floating chat menu</string>
+    <string name="floating_chat_guide">Hold the ball to speak, then release to send.\nTap the right button to start or stop OCR.\nDouble-tap the ball to open the chat.</string>
+    <string name="floating_chat_guide_done">Got it</string>
+    <string name="floating_voice_hold_hint">Hold the chat ball to speak, then release to transcribe and send.</string>
+    <string name="floating_voice_unavailable">The microphone is unavailable in floating chat. Reopen floating chat and try again.</string>
+    <string name="floating_voice_notification">Floating chat voice input is available</string>
+    <string name="floating_voice_preparing">Starting the microphone</string>
+    <string name="floating_voice_recording">Recording. Release to transcribe.</string>
+    <string name="floating_voice_ready">Recording limit reached. Release to transcribe.</string>
+    <string name="floating_voice_transcribing">Transcribing</string>
+    <string name="floating_chat_stop_ocr">Stop OCR</string>
+    <string name="floating_chat_start_ocr">Start OCR</string>
+    <string name="floating_chat_collapse">Collapse to ball</string>
 </resources>

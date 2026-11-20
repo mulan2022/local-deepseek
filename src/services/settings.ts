@@ -4,6 +4,11 @@ import {
   defaultModel, isProvider, validProviderBase, type ModelSelection, type ProviderId, type ProviderProfile,
 } from './api/providers.js'
 import { normalizeLocation, type UserLocation } from './location.js'
+import {
+  getActiveFolderId,
+  readFolderValue,
+  writeFolderValue,
+} from './chat/folderStorage.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
@@ -97,9 +102,9 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
-const readModel = (): ModelSelection => {
+const readModel = (folderId: string): ModelSelection => {
   try {
-    const value = JSON.parse(read(KEYS.selectedModel) ?? 'null')
+    const value = JSON.parse(readFolderValue(folderId, KEYS.selectedModel) ?? 'null')
     if (isProvider(value?.provider) && typeof value.model === 'string' && value.model.trim()) {
       return { provider: value.provider, model: value.model.trim() }
     }
@@ -109,9 +114,9 @@ const readModel = (): ModelSelection => {
   return defaultModel
 }
 
-const readProfiles = (): Settings['providerProfiles'] => {
+const readProfiles = (folderId: string): Settings['providerProfiles'] => {
   try {
-    const saved = JSON.parse(read(KEYS.providerProfiles) ?? '{}')
+    const saved = JSON.parse(readFolderValue(folderId, KEYS.providerProfiles) ?? '{}')
     const profiles: Settings['providerProfiles'] = {}
     for (const [provider, value] of Object.entries(saved ?? {})) {
       if (!isProvider(provider) || !value || typeof value !== 'object') {continue}
@@ -130,9 +135,9 @@ const readProfiles = (): Settings['providerProfiles'] => {
   }
 }
 
-const readCompact = (): CompactSettings => {
+const readCompact = (folderId: string): CompactSettings => {
   try {
-    const saved = JSON.parse(read(KEYS.compact) ?? '{}')
+    const saved = JSON.parse(readFolderValue(folderId, KEYS.compact) ?? '{}')
     return {
       enabled: saved?.enabled === true,
       preset: saved?.preset === '967000' || saved?.preset === 'custom' ? saved.preset : '200000',
@@ -143,19 +148,31 @@ const readCompact = (): CompactSettings => {
   }
 }
 
+type FolderSettings = Pick<Settings,
+  'apiKey' | 'selectedModel' | 'providerProfiles' | 'thinking' | 'search' | 'compact'>
+
+const readFolderSettings = (folderId: string): FolderSettings => ({
+  apiKey: readFolderValue(folderId, KEYS.apiKey),
+  selectedModel: readModel(folderId),
+  providerProfiles: readProfiles(folderId),
+  thinking: readFolderValue(folderId, KEYS.thinking) === 'true',
+  search: readFolderValue(folderId, KEYS.search) === 'true',
+  compact: readCompact(folderId),
+})
+
 export const useSettings = create<Settings>(() => ({
-  apiKey: read(KEYS.apiKey),
-  selectedModel: readModel(),
-  providerProfiles: readProfiles(),
+  ...readFolderSettings(getActiveFolderId()),
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
   ttsVoice: initialTtsVoice(),
-  thinking: read(KEYS.thinking) === 'true',
-  search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
-  compact: readCompact(),
 }))
+
+/** 回复与压缩全部停止后调用，避免把新文件夹配置用于旧请求。 */
+export const activateSettingsFolder = (folderId: string) => {
+  useSettings.setState(readFolderSettings(folderId))
+}
 
 export const setLocale = (locale: Locale) => {
   write(KEYS.locale, locale)
@@ -179,7 +196,7 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 }
 
 export const setApiKey = (apiKey: string | null) => {
-  write(KEYS.apiKey, apiKey)
+  writeFolderValue(getActiveFolderId(), KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
 }
 
@@ -187,29 +204,29 @@ export const getProviderKey = (settings: Settings, provider: ProviderId): string
   provider === 'deepseek' ? settings.apiKey ?? '' : settings.providerProfiles[provider]?.apiKey ?? ''
 
 export const setSelectedModel = (selectedModel: ModelSelection) => {
-  write(KEYS.selectedModel, JSON.stringify(selectedModel))
+  writeFolderValue(getActiveFolderId(), KEYS.selectedModel, JSON.stringify(selectedModel))
   useSettings.setState({ selectedModel })
 }
 
 export const setProviderProfile = (provider: ProviderId, profile: ProviderProfile) => {
   const providerProfiles = { ...useSettings.getState().providerProfiles, [provider]: profile }
-  write(KEYS.providerProfiles, JSON.stringify(providerProfiles))
+  writeFolderValue(getActiveFolderId(), KEYS.providerProfiles, JSON.stringify(providerProfiles))
   useSettings.setState({ providerProfiles })
 }
 
 export const setThinking = (thinking: boolean) => {
-  write(KEYS.thinking, String(thinking))
+  writeFolderValue(getActiveFolderId(), KEYS.thinking, String(thinking))
   useSettings.setState({ thinking })
 }
 
 export const setSearch = (search: boolean) => {
-  write(KEYS.search, String(search))
+  writeFolderValue(getActiveFolderId(), KEYS.search, String(search))
   useSettings.setState({ search })
 }
 
 export const setCompactSettings = (update: Partial<CompactSettings>) => {
   const compact = { ...useSettings.getState().compact, ...update }
-  write(KEYS.compact, JSON.stringify(compact))
+  writeFolderValue(getActiveFolderId(), KEYS.compact, JSON.stringify(compact))
   useSettings.setState({ compact })
 }
 

@@ -1,4 +1,5 @@
-import { IconPanelLeftOutline16, NewChatIcon } from '../base/icons.js'
+import { IconPanelLeftOutline16, NewChatIcon, IconStar16 } from '../base/icons.js'
+import { openFavorites } from '../../services/chat/favorites.js'
 import { useTranslate } from '../../i18n/index.js'
 import { setSiderCollapsed } from '../../services/settings.js'
 import { newChat } from '../../services/chat/store.js'
@@ -25,6 +26,7 @@ export const CollapsedSider = () => {
           tooltip={t('newChat')}
           onClick={newChat}
         />
+        <IconButton size="m" tone="primary" icon={<IconStar16 />} tooltip={t('favorites')} onClick={openFavorites} />
       </div>
     </div>
   )

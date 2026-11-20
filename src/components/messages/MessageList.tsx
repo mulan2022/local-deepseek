@@ -6,6 +6,7 @@ import {
   getVisibleMessages,
   type MessageVersions,
 } from '../../services/chat/branches.js'
+import { observationDisplayText } from '../../services/chat/observationContent.js'
 import { finishMessageJump, selectMessageVersion, useChatStore } from '../../services/chat/store.js'
 import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
@@ -34,6 +35,16 @@ import styles from './MessageList.module.css'
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
+
+const OcrEvent = ({ task, summary }: { task: string; summary: string }) => {
+  const text = observationDisplayText(task)
+  return text ? (
+    <details>
+      <summary>{summary}</summary>
+      <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{text}</pre>
+    </details>
+  ) : summary
+}
 
 export const MessageList = ({
   session,
@@ -162,6 +173,8 @@ export const MessageList = ({
       stickyRef.current = false
       scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16
       scrollTopRef.current = scroll.scrollTop
+      target.animate?.([{ backgroundColor: 'rgba(255,154,85,0.22)' }, { backgroundColor: 'transparent' }],
+        { duration: 1600, easing: 'ease-out' })
     }
     finishMessageJump(jump)
   }, [jump, session.id])
@@ -177,7 +190,10 @@ export const MessageList = ({
               message.role === 'user' ? (
                 message.heartbeat ? (
                   <div key={message.id} data-chat-message-id={message.id} className={styles.heartbeat}>
-                    {t('phoneHeartbeatEvent', { time: new Date(message.heartbeat.at).toLocaleString() })}
+                    {message.heartbeat.schedule?.mode === 'screen_ocr' ? (
+                      <OcrEvent task={message.heartbeat.task}
+                        summary={t('phoneOcrEvent', { time: new Date(message.heartbeat.at).toLocaleString() })} />
+                    ) : t('phoneHeartbeatEvent', { time: new Date(message.heartbeat.at).toLocaleString() })}
                   </div>
                 ) : (
                   <UserMessage

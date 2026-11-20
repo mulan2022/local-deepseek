@@ -71,11 +71,12 @@ const EditMemory = ({ value, limit, save }: {
 
 const RecallPreview = () => {
   const t = useTranslate()
+  const folderId = useChatStore((state) => state.activeFolderId)
   const [recent, setRecent] = useState<ReturnType<typeof buildRecentRecall>>()
   const [error, setError] = useState(false)
   useEffect(() => {
     let active = true
-    void loadRecallSessions().then((sessions) => {
+    void loadRecallSessions(folderId).then((sessions) => {
       if (active) {
         setRecent(buildRecentRecall(sessions).reverse())
       }
@@ -85,7 +86,7 @@ const RecallPreview = () => {
       }
     })
     return () => { active = false }
-  }, [])
+  }, [folderId])
   return (
     <>
       <p>{t('memoryRecallDescription')}</p>

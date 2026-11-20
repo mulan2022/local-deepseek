@@ -7,13 +7,9 @@
   justify-content: center;
   cursor: copy;
   pointer-events: none;
-  background-color: rgba(255, 255, 255, 0.7);
+  background-color: var(--cosmos-veil);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
-
-  [data-ds-dark-theme] & {
-    background-color: rgba(39, 39, 48, 0.7);
-  }
 }
 
 .wrap {

@@ -34,7 +34,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
   return crc >>> 0
 })
 
-const readFileSlice = async (file: File, start: number, end: number) => {
+const readFileSlice = async (file: Blob, start: number, end: number) => {
   try {
     return new Uint8Array(await file.slice(start, end).arrayBuffer())
   } catch {
@@ -43,7 +43,7 @@ const readFileSlice = async (file: File, start: number, end: number) => {
 }
 
 // 连续的 ZIP 元数据和压缩数据共享同一小块缓冲，减少 WebView 对文件提供方的读取。
-const createReader = (file: File) => {
+const createReader = (file: Blob) => {
   let windowStart = 0
   let bytes: Uint8Array = new Uint8Array()
   return async (start: number, length: number) => {
@@ -262,14 +262,15 @@ export type ArchiveEntry = {
   stream: AsyncIterable<Uint8Array>
 }
 
-/**
- * 按条目在文件中的物理顺序逐条、逐块解压，跳过目录条目。
- * 调用方必须消费完当前条目的数据，再请求下一个条目。
- */
-export async function* readArchive(file: File): AsyncGenerator<ArchiveEntry> {
-  const readBytes = createReader(file)
-  const directory = await readDirectory(file.size, readBytes)
+async function* readArchiveEntries(
+  readBytes: ReadBytes,
+  directory: { entries: Entry[]; offset: number },
+  include?: (path: string) => boolean,
+): AsyncGenerator<ArchiveEntry> {
   for (const [index, entry] of directory.entries.entries()) {
+    if (include && !include(entry.path)) {
+      continue
+    }
     const boundary = directory.entries[index + 1]?.offset ?? directory.offset
     const start = await readEntryOffset(readBytes, entry, boundary)
     if (entry.path.endsWith('/')) {
@@ -324,6 +325,23 @@ export async function* readArchive(file: File): AsyncGenerator<ArchiveEntry> {
       invalid()
     }
   }
+}
+
+/** Parse the ZIP directory once for callers that read several independent sets of entries. */
+export const openArchive = async (file: Blob) => {
+  const readBytes = createReader(file)
+  const directory = await readDirectory(file.size, readBytes)
+  return (include?: (path: string) => boolean) => readArchiveEntries(readBytes, directory, include)
+}
+
+/**
+ * 按条目在文件中的物理顺序逐条、逐块解压，跳过目录条目。
+ * 指定 include 时，只读取符合条件的条目内容。
+ * 调用方必须消费完当前条目的数据，再请求下一个条目。
+ */
+export async function* readArchive(file: Blob, include?: (path: string) => boolean): AsyncGenerator<ArchiveEntry> {
+  const entries = await openArchive(file)
+  yield* entries(include)
 }
 
 /** 读出整个条目：会话 JSON 需要完整解析，图片需要识别类型后整张保存。 */

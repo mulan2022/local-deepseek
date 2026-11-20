@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
 import { uploadFile } from './api/client.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
+import { supportsLocalAttachments, usesDeepSeekWebTools, type ModelSelection } from './api/providers.js'
 import type { FilePurpose } from './api/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
 
@@ -24,6 +25,49 @@ export const getFileExt = (name: string) => {
 }
 
 export const isAcceptedExt = (name: string) => ACCEPTED_EXTS.includes(getFileExt(name))
+
+const supportsWebP = (provider: ModelSelection['provider']) =>
+  provider === 'openai' || provider === 'claude' || provider === 'gemini' ||
+  provider === 'qwen' || provider === 'hunyuan'
+
+const LOCAL_TEXT_EXTS = ['txt', 'md', 'markdown', 'py', 'csv']
+export const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+export const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+export type LocalTextMime = 'text/plain' | typeof DOCX_MIME | typeof XLSX_MIME
+
+export const isLocalTextMime = (mime: string | undefined): mime is LocalTextMime =>
+  mime === 'text/plain' || mime === DOCX_MIME || mime === XLSX_MIME
+
+export const localAttachmentType = (selection: ModelSelection, name: string) => {
+  const ext = getFileExt(name)
+  if (LOCAL_TEXT_EXTS.includes(ext)) {
+    return 'text/plain'
+  }
+  switch (ext) {
+    case 'pdf':
+      return 'application/pdf'
+    case 'docx':
+      return DOCX_MIME
+    case 'xlsx':
+      return XLSX_MIME
+    case 'jpeg':
+    case 'jpg':
+      return 'image/jpeg'
+    case 'png':
+      return 'image/png'
+    case 'webp':
+      return supportsWebP(selection.provider) ? 'image/webp' : undefined
+    default:
+      return undefined
+  }
+}
+
+export const acceptsChatAttachment = (selection: ModelSelection, name: string) =>
+  usesDeepSeekWebTools(selection) || (supportsLocalAttachments(selection) && !!localAttachmentType(selection, name))
+
+export const localAttachmentAccept = ({ provider }: ModelSelection) =>
+  ['pdf', 'docx', 'xlsx', ...LOCAL_TEXT_EXTS, 'jpg', 'jpeg', 'png', ...(supportsWebP(provider) ? ['webp'] : [])]
+    .map((ext) => `.${ext}`).join(',')
 
 /** 需要服务端做版面解析的文档；其余非图片文件（纯文本、代码、表格、电子书）无需解析 */
 const LAYOUT_RECOGNITION_EXTS = new Set(['pdf', 'doc', 'docx', 'ppt', 'pptx'])

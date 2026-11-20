@@ -57,7 +57,7 @@ const ProviderSettings = ({ provider }: { provider: ProviderId }) => {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(false)
   const requestRef = useRef<AbortController | null>(null)
-  const editableBase = ['kimi', 'glm', 'qwen', 'openai', 'claude', 'custom'].includes(provider)
+  const editableBase = ['kimi', 'glm', 'qwen', 'hunyuan', 'openai', 'claude', 'custom'].includes(provider)
   const validBase = validProviderBase(provider, base)
   const apiKey = key.trim() || savedKey
   useEffect(() => () => requestRef.current?.abort(), [])

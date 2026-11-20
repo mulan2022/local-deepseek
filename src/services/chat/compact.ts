@@ -3,6 +3,7 @@ import { streamProviderMessage } from '../api/providerClient.js'
 import { providers, type ModelSelection } from '../api/providers.js'
 import type { MessageParam } from '../api/types.js'
 import { getProviderKey, useSettings } from '../settings.js'
+import { observationRequestTask } from './observationContent.js'
 import compactPrompt from './prompts/compact.md'
 import { getReplyText } from './reply.js'
 import type { AssistantMessage, Message } from './types.js'
@@ -34,7 +35,9 @@ export const summarizeConversation = async (
   const tail = anchor ? history.slice(history.indexOf(anchor) + 1) : history
   const transcript = tail.map((message) => message.role === 'user'
     ? { role: message.heartbeat ? 'applicationEvent' : message.role, text: message.content,
-      ...(message.heartbeat ? { heartbeat: message.heartbeat } : {}),
+      ...(message.heartbeat ? { heartbeat: message.heartbeat.schedule?.mode === 'screen_ocr'
+        ? { ...message.heartbeat, task: observationRequestTask(message.heartbeat.task) }
+        : message.heartbeat } : {}),
       ...(message.files.length ? { attachments: message.files.map(({ name, mimeType }) => ({ name, mimeType })) } : {}),
     }
     : { role: message.role, text: getReplyText(message) })

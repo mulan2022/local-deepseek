@@ -15,11 +15,28 @@ const getOsTheme = (): Theme => (query.matches ? 'dark' : 'light')
 const resolveTheme = (preference: ThemePreference, osTheme: Theme): Theme =>
   preference === 'system' ? osTheme : preference
 
-/** 当前实际生效的深浅色：手动选择优先，「跟随系统」时取系统设置 */
+/** 新对话页是流光玻璃，对话中是简洁实色；安卓悬浮面板叠在其他应用上，固定深色，与主题设置无关 */
+export type Surface = 'welcome' | 'session' | 'floating'
+
+let surface: Surface = 'session'
+let floatingSurface = false
+const surfaceListeners = new Set<() => void>()
+
+const subscribeSurface = (listener: () => void) => {
+  surfaceListeners.add(listener)
+  return () => {
+    surfaceListeners.delete(listener)
+  }
+}
+
+const getSurface = () => floatingSurface
+
+/** 当前实际生效的深浅色：悬浮面板固定深色；否则手动选择优先，「跟随系统」时取系统设置 */
 export const useTheme = (): Theme => {
   const preference = useSettings((state) => state.themePreference)
   const osTheme = useSyncExternalStore(subscribeOsTheme, getOsTheme)
-  return resolveTheme(preference, osTheme)
+  const floating = useSyncExternalStore(subscribeSurface, getSurface)
+  return floating ? 'dark' : resolveTheme(preference, osTheme)
 }
 
 const syncPageBackground = () => {
@@ -53,11 +70,32 @@ const applyTheme = (theme: Theme) => {
 let appliedTheme: Theme | null = null
 
 const syncTheme = () => {
-  const theme = resolveTheme(useSettings.getState().themePreference, getOsTheme())
+  const theme = floatingSurface ? 'dark' : resolveTheme(useSettings.getState().themePreference, getOsTheme())
   if (theme !== appliedTheme) {
     appliedTheme = theme
     applyTheme(theme)
   }
+}
+
+/** 切换页面表层：悬浮面板背景透明、露出原生玻璃面板并切换深色；切换帧禁用过渡，避免玻璃与实色混出中间态。 */
+export const setSurface = (next: Surface) => {
+  if (next === surface) {
+    return
+  }
+  surface = next
+  const body = document.body
+  body.classList.add('change-theme')
+  body.classList.toggle('welcome', next === 'welcome')
+  body.classList.toggle('floating', next === 'floating')
+  if (floatingSurface !== (next === 'floating')) {
+    floatingSurface = next === 'floating'
+    syncTheme()
+    surfaceListeners.forEach((listener) => listener())
+  }
+  syncPageBackground()
+  setTimeout(() => {
+    body.classList.remove('change-theme')
+  }, 0)
 }
 
 /** 首屏渲染前同步应用一次，之后随主题设置与系统深浅色变化更新 */

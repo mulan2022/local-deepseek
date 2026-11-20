@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -17,6 +18,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.widget.Toast;
+import android.widget.FrameLayout;
 import android.view.WindowInsets;
 
 import java.io.File;
@@ -31,11 +33,14 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_MICROPHONE = 2;
     private static final int SAVE_FILE = 3;
     private static final int OVERLAY_PERMISSION = 4;
+    private static final int FLOATING_MICROPHONE = 5;
 
     final LocalFiles localFiles = new LocalFiles();
     private ChatWebView chat;
+    private FrameLayout chatContent;
     private FloatingChatWindow floatingChat;
     private boolean openAfterPermission;
+    private boolean requestFloatingMicrophoneOnResume;
     private ValueCallback<Uri[]> fileChooser;
     private PermissionRequest microphone;
 
@@ -47,17 +52,61 @@ public final class MainActivity extends Activity {
         floatingChat = new FloatingChatWindow(this, chat);
         WebView webView = chat.view;
         webView.setWebChromeClient(new AndroidDialogs());
+        chatContent = new FrameLayout(this);
+        // Keep keyboard avoidance on the Activity's container. The WebView also lives in the overlay.
         if (Build.VERSION.SDK_INT >= 30) {
-            webView.setOnApplyWindowInsetsListener((view, windowInsets) -> {
-                if (floatingChat.isShowing()) return windowInsets;
-                Insets insets = windowInsets.getInsets(
-                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
-                    | WindowInsets.Type.ime());
-                view.setPadding(insets.left, insets.top, insets.right, insets.bottom);
-                return windowInsets;
+            getWindow().setDecorFitsSystemWindows(false);
+            chatContent.setOnApplyWindowInsetsListener((view, insets) -> {
+                fitChatContent(insets);
+                return WindowInsets.CONSUMED;
             });
         }
-        setContentView(webView);
+        chatContent.getViewTreeObserver().addOnGlobalLayoutListener(
+            () -> fitChatContent(chatContent.getRootWindowInsets()));
+        setContentView(chatContent);
+        attachFullChat();
+    }
+
+    void attachFullChat() {
+        chatContent.addView(chat.view, new FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        chatContent.requestApplyInsets();
+    }
+
+    private void fitChatContent(WindowInsets windowInsets) {
+        if (chatContent.getHeight() == 0 || chat.view.getParent() != chatContent) return;
+
+        Rect visible = new Rect();
+        int[] location = new int[2];
+        chatContent.getWindowVisibleDisplayFrame(visible);
+        chatContent.getLocationOnScreen(location);
+        int bottom = visible.isEmpty() ? location[1] + chatContent.getHeight() : visible.bottom;
+        int leftPadding = 0, topPadding = 0, rightPadding = 0;
+
+        if (Build.VERSION.SDK_INT >= 30 && windowInsets != null) {
+            Rect window = getWindowManager().getCurrentWindowMetrics().getBounds();
+            Insets insets = windowInsets.getInsets(
+                WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+            leftPadding = Math.max(0, window.left + insets.left - location[0]);
+            topPadding = Math.max(0, window.top + insets.top - location[1]);
+            rightPadding = Math.max(0, location[0] + chatContent.getWidth() - (window.right - insets.right));
+            bottom = Math.min(bottom, window.bottom - insets.bottom);
+            if (Build.VERSION.SDK_INT >= 35) {
+                for (Rect keyboard : windowInsets.getBoundingRects(WindowInsets.Type.ime())) {
+                    int keyboardTop = window.top + keyboard.top;
+                    if (!keyboard.isEmpty() && keyboardTop > location[1] + topPadding) {
+                        bottom = Math.min(bottom, keyboardTop);
+                    }
+                }
+            }
+        }
+        // Some keyboards only shrink the reported visible frame. Add only overlap that remains
+        // after Android has resized the container, so the keyboard space is never counted twice.
+        int bottomPadding = Math.max(0, location[1] + chatContent.getHeight() - bottom);
+        if (chatContent.getPaddingLeft() != leftPadding || chatContent.getPaddingTop() != topPadding
+                || chatContent.getPaddingRight() != rightPadding || chatContent.getPaddingBottom() != bottomPadding) {
+            chatContent.setPadding(leftPadding, topPadding, rightPadding, bottomPadding);
+        }
     }
 
     @Override
@@ -66,6 +115,10 @@ public final class MainActivity extends Activity {
         chat.phoneTools.setResumed(this, true);
         floatingChat.restore();
         HeartbeatJob.resumeLocalSchedule(this);
+        if (requestFloatingMicrophoneOnResume) {
+            requestFloatingMicrophoneOnResume = false;
+            getWindow().getDecorView().post(this::askForFloatingMicrophone);
+        }
         if (openAfterPermission) {
             openAfterPermission = false;
             getWindow().getDecorView().post(this::openFloatingChat);
@@ -106,6 +159,24 @@ public final class MainActivity extends Activity {
         } catch (RuntimeException unavailable) {
             chat.notifyFloatingChat("unavailable");
         }
+    }
+
+    void floatingReply(String session, String run, String text, boolean currentChat) { floatingChat.receive(session, run, text, currentChat); }
+    void refreshFloatingObservation() { floatingChat.refreshObservation(); }
+    void floatingVoiceState(String runId, String status) { floatingChat.voiceState(runId, status); }
+
+    void requestFloatingMicrophone() {
+        if (chat.phoneTools.isResumed()) {
+            floatingChat.restore();
+            askForFloatingMicrophone();
+        } else {
+            requestFloatingMicrophoneOnResume = true;
+            returnFromFloatingChat();
+        }
+    }
+
+    private void askForFloatingMicrophone() {
+        requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, FLOATING_MICROPHONE);
     }
 
     void focusFloatingInput(boolean focused) {
@@ -160,6 +231,14 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
+        if (code == FLOATING_MICROPHONE) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, R.string.floating_voice_hold_hint, Toast.LENGTH_SHORT).show();
+                if (chat.phoneTools.isResumed()) getWindow().getDecorView().post(this::openFloatingChat);
+                else openAfterPermission = true;
+            }
+            return;
+        }
         if (code == REQUEST_MICROPHONE && microphone != null) {
             PermissionRequest request = microphone;
             microphone = null;

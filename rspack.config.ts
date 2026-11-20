@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from '@rspack/cli'
@@ -12,8 +13,13 @@ const providerDevPaths: Record<string, string> = {
   'https://dashscope.aliyuncs.com': '/_provider_dev/qwen',
   'https://dashscope-intl.aliyuncs.com': '/_provider_dev/qwen-intl',
   'https://dashscope-us.aliyuncs.com': '/_provider_dev/qwen-us',
+  'https://tokenhub.tencentmaas.com': '/_provider_dev/hunyuan',
+  'https://tokenhub.tencentcloudmaas.com': '/_provider_dev/hunyuan-cloud',
+  'https://tokenhub-intl.tencentcloudmaas.com': '/_provider_dev/hunyuan-intl',
+  'https://api.x.ai': '/_provider_dev/grok',
 }
 const root = path.dirname(fileURLToPath(import.meta.url))
+const pdfjsRoot = path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
 ) as { version: string }
@@ -97,7 +103,20 @@ export const createConfig = ({
       __PROVIDER_DEV_PATHS__: JSON.stringify(dev ? providerDevPaths : {}),
     }),
     new rspack.CopyRspackPlugin({
-      patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
+      patterns: [
+        { from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' },
+        // Android's local asset handler serves bundled dependencies under /static/.
+        ...[
+          ['legacy/build/pdf.min.mjs', 'pdf.js'],
+          ['legacy/build/pdf.worker.min.mjs', 'worker.js'],
+          ['LICENSE', 'LICENSE'],
+          ...['cmaps', 'standard_fonts'].map((name) => [name, name]),
+          ...[
+            'openjpeg_nowasm_fallback.js', 'jbig2_nowasm_fallback.js',
+            'LICENSE_OPENJPEG', 'LICENSE_PDFJS_OPENJPEG', 'LICENSE_JBIG2', 'LICENSE_PDFJS_JBIG2',
+          ].map((name) => [`wasm/${name}`, `wasm/${name}`]),
+        ].map(([from, to]) => ({ from: path.join(pdfjsRoot, from), to: `static/pdfjs/${to}` })),
+      ],
     }),
   ],
   performance: { hints: false },
@@ -110,6 +129,10 @@ export const createConfig = ({
         `${prefix}/api/paas/v4/chat/completions`,
         `${prefix}/api/v1/models`,
         `${prefix}/compatible-mode/v1/chat/completions`,
+        // 混元 TokenHub / xAI Grok
+        `${prefix}/v1/models`,
+        `${prefix}/v1/chat/completions`,
+        `${prefix}/v1/responses`,
       ],
       target,
       changeOrigin: true,

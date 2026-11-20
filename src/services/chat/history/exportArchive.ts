@@ -20,18 +20,20 @@ export const exportArchive = async (
   const index: SessionIndexEntry[] = []
   const originals = new Map<string, Blob | undefined>()
   for await (const session of sessions) {
+    const originalKey = (id: string) => JSON.stringify([session.folderId, id])
     for (const message of session.messages) {
       if (message.role === 'user') {
         for (const file of message.files) {
-          if (file.isImage && !originals.has(file.id)) {
-            originals.set(file.id, await db.loadFile(file.id))
+          const key = originalKey(file.id)
+          if (file.isImage && !originals.has(key)) {
+            originals.set(key, await db.loadFile(session.folderId, file.id))
           }
         }
       }
     }
     const images = new Map<string, Blob>()
     const data = toSessionFile(session, ({ id, name, isImage }) => {
-      const blob = originals.get(id)
+      const blob = originals.get(originalKey(id))
       if (!blob || !isImage) {
         return null
       }
